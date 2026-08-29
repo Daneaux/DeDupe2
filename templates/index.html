@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section id="panel-volumes" class="panel" role="tabpanel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Volume Manager</h2>
+      <span class="subtitle">Connected volumes and their scan state</span>
+    </div>
+    <div class="toolbar-actions">
+      <button class="btn btn-secondary" id="btn-scan-all">Scan all</button>
+      <button class="btn btn-primary" id="btn-add-volume">Add volume</button>
+    </div>
+  </div>
+
+  <div class="volume-list">
+    {% for volume in volumes %}
+    <article class="volume-card{% if volume.dirty %} dirty{% endif %}" data-path="{{ volume.path_str() }}">
+      <div class="volume-main">
+        <input type="checkbox" class="volume-select" aria-label="Select {{ volume.name }}" />
+        <div class="drive-badge">{{ volume.name }}</div>
+        <div class="volume-info">
+          <div class="volume-title">
+            <h3>{{ volume.name }} <span class="volume-label">{{ volume.label }}</span></h3>
+            <span class="fs-badge">{{ volume.fs }}</span>
+            {% if volume.scanned %}
+            <span class="badge badge-ok">Scanned</span>
+            {% else %}
+            <span class="badge badge-muted">Not scanned</span>
+            {% endif %}
+            {% if volume.dirty %}
+            <span class="badge badge-dirty" title="A sub-directory has changed since the last scan">Dirty</span>
+            {% endif %}
+          </div>
+          <div class="volume-path">{{ volume.path_str() }}</div>
+          <div class="capacity">
+            <div class="capacity-bar"><div class="capacity-fill" style="width: {{ volume.used_percent() }}%"></div></div>
+            <span class="capacity-text">{{ volume.used_gb() }} GB of {{ volume.total_gb() }} GB</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="volume-controls">
+        <div class="segmented" role="group" aria-label="Scan depth for {{ volume.name }}">
+          <button class="seg{% if volume.depth.as_str() == "shallow" %} active{% endif %}" data-depth="shallow">Shallow</button>
+          <button class="seg{% if volume.depth.as_str() == "deep" %} active{% endif %}" data-depth="deep">Deep</button>
+        </div>
+
+        <div class="subtree-scan">
+          <select class="subtree-select" aria-label="Select sub-directory">
+            <option value="">Sub-directory…</option>
+            {% for sub in volume.subdirs %}
+            <option value="{{ sub }}">{{ sub }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn btn-small btn-secondary btn-scan-subtree">Scan subtree</button>
+        </div>
+
+        <div class="volume-actions">
+          {% if volume.scanned %}
+          <button class="btn btn-small btn-primary btn-scan">Re-scan</button>
+          {% else %}
+          <button class="btn btn-small btn-primary btn-scan">Scan</button>
+          {% endif %}
+          <button class="btn btn-small btn-danger btn-delete">Delete</button>
+        </div>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+
+  <section class="filetypes-card">
+    <div class="filetypes-head">
+      <h3>Managed file types</h3>
+      <span class="subtitle">Extensions included when scanning</span>
+    </div>
+    <div class="filetypes-add">
+      <input type="text" id="filetype-input" placeholder="e.g. jpg" aria-label="New file extension" />
+      <button class="btn btn-secondary" id="btn-add-filetype">Add</button>
+    </div>
+    <ul class="filetypes-list" id="filetypes-list">
+      {% for ft in file_types %}
+      <li class="chip">{{ ft.ext }}<button class="chip-remove" title="Remove {{ ft.ext }}">&times;</button></li>
+      {% endfor %}
+    </ul>
+  </section>
+</section>
+
+<section id="panel-duplicates" class="panel" role="tabpanel" hidden>
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Duplicates</h2>
+      <span class="subtitle">Results from completed scans</span>
+    </div>
+  </div>
+  <p class="placeholder">Duplicate results will appear here.</p>
+</section>
+
+<section id="panel-settings" class="panel" role="tabpanel" hidden>
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Settings</h2>
+      <span class="subtitle">Application preferences</span>
+    </div>
+  </div>
+  <p class="placeholder">Settings will appear here.</p>
+</section>
+
+<div class="modal" id="add-volume-modal" hidden>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-card">
+    <h3>Add volume</h3>
+    <label class="field">
+      <span>Path</span>
+      <input type="text" id="add-volume-path" placeholder="e.g. F:\" />
+    </label>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" data-close>Cancel</button>
+      <button class="btn btn-primary" id="btn-confirm-add-volume">Add</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
