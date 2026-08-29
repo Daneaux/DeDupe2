@@ -1,16 +1,14 @@
-mod volumes;
-
 use askama::Template;
 use axum::{routing::get, Router};
 use tower_http::services::ServeDir;
-use volumes::VolumeManager;
+use dedupe2::volumes::{FileType, Volume, VolumeManager};
 
 #[derive(Template)]
 #[template(path = "index.html")]
 struct IndexTemplate {
     title: &'static str,
-    volumes: Vec<volumes::Volume>,
-    file_types: Vec<volumes::FileType>,
+    volumes: Vec<Volume>,
+    file_types: Vec<FileType>,
 }
 
 async fn index() -> IndexTemplate {
