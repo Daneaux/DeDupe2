@@ -20,6 +20,21 @@ pub struct ScanTarget {
     pub name: String,
     pub paths: Vec<PathBuf>,
     pub volume: Volume,
+    pub extensions: Vec<String>,
+}
+
+impl ScanTarget {
+    pub fn includes_file(&self, path: &Path) -> bool {
+        if self.extensions.is_empty() {
+            return true;
+        }
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        self.extensions.iter().any(|e| e.eq_ignore_ascii_case(&ext))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -50,7 +65,7 @@ pub fn deep_scan(target: &ScanTarget) -> ScannedTree {
 fn scan(target: &ScanTarget, kind: HashKind) -> ScannedTree {
     let mut files = Vec::new();
     for path in &target.paths {
-        scan_path(path, kind, &mut files);
+        scan_path(path, kind, target, &mut files);
     }
 
     ScannedTree {
@@ -61,13 +76,16 @@ fn scan(target: &ScanTarget, kind: HashKind) -> ScannedTree {
     }
 }
 
-fn scan_path(root: &Path, kind: HashKind, files: &mut Vec<ScannedFile>) {
+fn scan_path(root: &Path, kind: HashKind, target: &ScanTarget, files: &mut Vec<ScannedFile>) {
     for entry in WalkDir::new(root)
         .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
     {
         if !entry.file_type().is_file() {
+            continue;
+        }
+        if !target.includes_file(entry.path()) {
             continue;
         }
 
@@ -91,7 +109,7 @@ fn scan_path(root: &Path, kind: HashKind, files: &mut Vec<ScannedFile>) {
     }
 }
 
-fn file_type_of(path: &Path) -> FileType {
+pub(crate) fn file_type_of(path: &Path) -> FileType {
     FileType {
         ext: path
             .extension()

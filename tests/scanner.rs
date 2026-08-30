@@ -30,6 +30,7 @@ fn test_target(dir: &Path) -> ScanTarget {
         name: "test".into(),
         paths: vec![dir.to_path_buf()],
         volume: Volume::new(dir.to_path_buf()),
+        extensions: vec!["txt".into(), "bin".into(), "jpg".into()],
     }
 }
 
@@ -100,6 +101,25 @@ fn detects_file_type_from_extension() {
     let tree = shallow_scan(&target);
 
     assert_eq!(tree.files[0].file_type.ext, "jpg");
+}
+
+#[test]
+fn filters_files_by_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    write_file(dir.path(), "keep.jpg", b"1");
+    write_file(dir.path(), "skip.docx", b"2");
+
+    let target = test_target(dir.path());
+    let tree = shallow_scan(&target);
+
+    let mut rel: Vec<String> = tree
+        .files
+        .iter()
+        .map(|f| f.path.strip_prefix(dir.path()).unwrap().display().to_string())
+        .collect();
+    rel.sort();
+
+    assert_eq!(rel, vec!["keep.jpg".to_string()]);
 }
 
 #[test]
