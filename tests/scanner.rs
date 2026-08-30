@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use dedupe2::Scanner::scanner::{shallow_scan, ScanTarget, HEADER_HASH_BYTES};
+use dedupe2::Scanner::scanner::{deep_scan, shallow_scan, ScanTarget, HEADER_HASH_BYTES};
 use dedupe2::volumes::Volume;
 
 fn write_file(dir: &Path, rel: &str, contents: &[u8]) -> PathBuf {
@@ -16,9 +16,13 @@ fn write_file(dir: &Path, rel: &str, contents: &[u8]) -> PathBuf {
     path
 }
 
-fn expected_hash(contents: &[u8]) -> String {
+fn expected_header_hash(contents: &[u8]) -> String {
     let n = contents.len().min(HEADER_HASH_BYTES);
     format!("{:016x}", seahash::hash(&contents[..n]))
+}
+
+fn expected_full_hash(contents: &[u8]) -> String {
+    format!("{:016x}", seahash::hash(contents))
 }
 
 fn test_target(dir: &Path) -> ScanTarget {
@@ -57,7 +61,7 @@ fn scans_files_recursively() {
 }
 
 #[test]
-fn records_size_and_hash_of_first_64kb() {
+fn shallow_scan_records_size_and_header_hash() {
     let dir = tempfile::tempdir().unwrap();
     let contents = vec![7u8; 100_000];
     write_file(dir.path(), "big.bin", &contents);
@@ -68,7 +72,23 @@ fn records_size_and_hash_of_first_64kb() {
     assert_eq!(tree.files.len(), 1);
     let file = &tree.files[0];
     assert_eq!(file.size, 100_000);
-    assert_eq!(file.hash64kb, expected_hash(&contents));
+    assert_eq!(file.hash, expected_header_hash(&contents));
+}
+
+#[test]
+fn deep_scan_records_full_file_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let contents = vec![9u8; 200_000];
+    write_file(dir.path(), "big.bin", &contents);
+
+    let target = test_target(dir.path());
+    let tree = deep_scan(&target);
+
+    assert_eq!(tree.files.len(), 1);
+    let file = &tree.files[0];
+    assert_eq!(file.size, 200_000);
+    assert_eq!(file.hash, expected_full_hash(&contents));
+    assert_ne!(file.hash, expected_header_hash(&contents));
 }
 
 #[test]
