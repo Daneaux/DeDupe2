@@ -76,10 +76,10 @@ fn main() {
         fast_elapsed
     );
 
-    let fast_by_path: HashMap<String, String> = fast
+    let fast_by_path: HashMap<String, u64> = fast
         .files
         .iter()
-        .map(|f| (f.path.display().to_string(), f.hash.clone()))
+        .map(|f| (f.path.display().to_string(), f.hash))
         .collect();
     let shallow_paths: HashSet<String> = shallow
         .files
@@ -93,7 +93,7 @@ fn main() {
     for f in &shallow.files {
         let key = f.path.display().to_string();
         match fast_by_path.get(&key) {
-            Some(hash) if hash.as_str() == f.hash.as_str() => verified += 1,
+            Some(hash) if *hash == f.hash => verified += 1,
             Some(_) => problems.push(format!("hash differs: {key}")),
             None => problems.push(format!("missing in fast scan: {key}")),
         }

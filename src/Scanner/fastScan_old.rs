@@ -1,13 +1,13 @@
 // I want to try this against the modified FastScan to see if it is faster than the new FastScan. I will benchmark both versions and compare their performance.
 
-pub fn fast_scan(target: &ScanTarget) {
+pub fn fast_scan_orig(target: &ScanTarget) {
     let (tx, rx) = channel::<PhotoMetadata>();
 
-    let db_handle = std::thread::spawn(move || {
+    /* let db_handle = std::thread::spawn(move || {
         if let Err(e) = run_database_writer(rx) {
             eprintln!("Database writer error: {e}");
         }
-    });
+    }); */
 
     println!("Stage 1: Crawling directory tree...");
     let mut files = Vec::new();

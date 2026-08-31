@@ -43,7 +43,7 @@ pub struct ScannedFile {
     pub size: u64,
     pub modified: SystemTime,
     pub file_type: FileType,
-    pub hash: String,
+    pub hash: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -119,20 +119,20 @@ pub(crate) fn file_type_of(path: &Path) -> FileType {
     }
 }
 
-fn hash_header(path: &Path) -> String {
+fn hash_header(path: &Path) -> u64 {
     let mut file = match File::open(path) {
         Ok(f) => f,
-        Err(_) => return String::new(),
+        Err(_) => return 0,
     };
 
     let mut buf = [0u8; HEADER_HASH_BYTES];
     let read = file.read(&mut buf).unwrap_or(0);
-    format!("{:016x}", seahash::hash(&buf[..read]))
+    seahash::hash(&buf[..read])
 }
 
-fn hash_full(path: &Path) -> String {
+fn hash_full(path: &Path) -> u64 {
     match std::fs::read(path) {
-        Ok(bytes) => format!("{:016x}", seahash::hash(&bytes)),
-        Err(_) => String::new(),
+        Ok(bytes) => seahash::hash(&bytes),
+        Err(_) => 0,
     }
 }

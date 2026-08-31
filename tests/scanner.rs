@@ -16,13 +16,13 @@ fn write_file(dir: &Path, rel: &str, contents: &[u8]) -> PathBuf {
     path
 }
 
-fn expected_header_hash(contents: &[u8]) -> String {
+fn expected_header_hash(contents: &[u8]) -> u64 {
     let n = contents.len().min(HEADER_HASH_BYTES);
-    format!("{:016x}", seahash::hash(&contents[..n]))
+    seahash::hash(&contents[..n])
 }
 
-fn expected_full_hash(contents: &[u8]) -> String {
-    format!("{:016x}", seahash::hash(contents))
+fn expected_full_hash(contents: &[u8]) -> u64 {
+    seahash::hash(contents)
 }
 
 fn test_target(dir: &Path) -> ScanTarget {

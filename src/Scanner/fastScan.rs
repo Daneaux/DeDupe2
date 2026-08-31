@@ -21,7 +21,7 @@ pub fn fast_scan(target: &ScanTarget) -> ScannedTree {
                 size: *size,
                 modified: *modified,
                 file_type: file_type_of(path),
-                hash: format!("{:016x}", hash),
+                hash,
             })
         })
         .collect();
