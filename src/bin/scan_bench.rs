@@ -8,17 +8,32 @@ use dedupe2::volumes::Volume;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let path = match args.get(1) {
+    let mut path: Option<String> = None;
+    let mut show_dates = false;
+
+    for arg in args.iter().skip(1) {
+        match arg.as_str() {
+            "--creation-dates" => show_dates = true,
+            other => path = Some(other.to_string()),
+        }
+    }
+
+    let path = match path {
         Some(p) => p,
         None => {
-            eprintln!("usage: scan_bench <directory>");
+            eprintln!("usage: scan_bench [--creation-dates] <directory>");
             std::process::exit(2);
         }
     };
     let root = PathBuf::from(path);
 
     let extensions: Vec<String> = [
-        "jpg", "jpeg", "png", "gif", "heic", "tiff", "cr2", "nef", "webp", "bmp",
+        "jpg", "jpeg", "png", "heic", "tiff", 
+        "cr2", "crw", "cr3",
+        "nef",
+         "raf",
+         "orf",
+         "raw", "rw2"
     ]
     .iter()
     .map(|s| s.to_string())
@@ -75,6 +90,16 @@ fn main() {
         fast.files.len(),
         fast_elapsed
     );
+
+    if show_dates {
+        println!("creation dates:");
+        for f in &shallow.files {
+            if let Some(date) = f.creation_date.value() {
+                let name = f.path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                println!("  {name}: {date}");
+            }
+        }
+    }
 
     let fast_by_path: HashMap<String, u64> = fast
         .files

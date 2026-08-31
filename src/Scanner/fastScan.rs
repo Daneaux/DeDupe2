@@ -7,6 +7,7 @@ use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use crate::Scanner::scanner::{file_type_of, ScanTarget, ScannedFile, ScannedTree};
+use crate::exif::creation_date;
 
 pub const HEADER_READ_BYTES: usize = 64 * 1024;
 
@@ -22,6 +23,7 @@ pub fn fast_scan(target: &ScanTarget) -> ScannedTree {
                 modified: *modified,
                 file_type: file_type_of(path),
                 hash,
+                creation_date: creation_date(path),
             })
         })
         .collect();

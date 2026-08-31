@@ -5,6 +5,7 @@ use std::time::SystemTime;
 
 use walkdir::WalkDir;
 
+use crate::exif::{creation_date, CreationDate};
 use crate::volumes::{FileType, Volume};
 
 pub const HEADER_HASH_BYTES: usize = 64 * 1024;
@@ -44,6 +45,7 @@ pub struct ScannedFile {
     pub modified: SystemTime,
     pub file_type: FileType,
     pub hash: u64,
+    pub creation_date: CreationDate,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +107,7 @@ fn scan_path(root: &Path, kind: HashKind, target: &ScanTarget, files: &mut Vec<S
             modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
             file_type: file_type_of(&path),
             hash,
+            creation_date: creation_date(&path),
         });
     }
 }
