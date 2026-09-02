@@ -2,4 +2,5 @@
 pub mod Scanner;
 pub mod database;
 pub mod exif;
+pub mod image_reader;
 pub mod volumes;
