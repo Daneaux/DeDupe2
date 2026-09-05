@@ -1,36 +1,35 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::Instant;
-use dedupe2::volumes::Volume;
-use std::collections::{HashMap, HashSet};
-use dedupe2::Scanner::fastScan::fast_scan;
-use dedupe2::Scanner::scanner::{deep_scan, shallow_scan, ScanTarget};
+
+use crate::Scanner::scanner::{ScannedFile, ScannedTree};
 
 pub fn intersection(set1: &HashSet<PathBuf>, set2: &HashSet<PathBuf>) -> HashSet<PathBuf> {
     set1.intersection(set2).cloned().collect()
 }
 
-pub fn intersect(tree1: &ScannedTree, tree2: &ScannedTree) -> HashSet<PathBuf> {
-    let set1: HashSet<PathBuf> = tree1.files.iter().map(|f| f.hash).collect();
-    let set2: HashSet<PathBuf> = tree2.files.iter().map(|f| f.hash).collect();
-    intersection(&set1, &set2)
+pub fn intersect(tree1: &ScannedTree, tree2: &ScannedTree) -> HashSet<u64> {
+    let set1: HashSet<u64> = tree1.files.iter().map(|f| f.hash).collect();
+    let set2: HashSet<u64> = tree2.files.iter().map(|f| f.hash).collect();
+    set1.intersection(&set2).cloned().collect()
 }
 
-
-fn find_in_b_also_in_a(a: &[ScannedFile], b: &[ScannedFile]) -> Vec<ScannedFile> {
+pub fn find_in_b_also_in_a(a: &[ScannedFile], b: &[ScannedFile]) -> Vec<ScannedFile> {
     let a_hashes: HashSet<u64> = a.iter().map(|x| x.hash).collect();
 
     b.iter()
         .filter(|item| a_hashes.contains(&item.hash))
         .cloned()
         .collect()
-}   
+}
 
-fn things_in_B_also_in_A(a: &mut [ScannedFile], b: &mut [ScannedFile]) -> Vec<ScannedFile> {
+pub fn things_in_B_also_in_A(a: &mut [ScannedFile], b: &mut [ScannedFile]) -> Vec<ScannedFile> {
     a.sort_unstable_by_key(|x| x.hash);
     b.sort_unstable_by_key(|x| x.hash);
 
-    // Assert no duplicates (panics if found)
-    assert!(a.windows(2).all(|w| w[0] != w[1]), "duplicates found. 'a' must not contain duplicates");
+    assert!(
+        a.windows(2).all(|w| w[0].hash != w[1].hash),
+        "duplicates found. 'a' must not contain duplicates"
+    );
 
     let mut result = Vec::new();
     let (mut i, mut j) = (0, 0);
@@ -46,7 +45,7 @@ fn things_in_B_also_in_A(a: &mut [ScannedFile], b: &mut [ScannedFile]) -> Vec<Sc
         }
     }
     result
-}   
+}
 
 pub fn difference(set1: &HashSet<PathBuf>, set2: &HashSet<PathBuf>) -> HashSet<PathBuf> {
     set1.difference(set2).cloned().collect()
