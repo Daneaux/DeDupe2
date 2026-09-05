@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use dedupe2::Scanner::scanner::{deep_scan, shallow_scan, ScanTarget, HEADER_HASH_BYTES};
+use dedupe2::Scanner::scanner::{deep_scan, shallow_scan, ScanTarget};
 use dedupe2::volumes::Volume;
 
 fn write_file(dir: &Path, rel: &str, contents: &[u8]) -> PathBuf {
@@ -17,7 +17,7 @@ fn write_file(dir: &Path, rel: &str, contents: &[u8]) -> PathBuf {
 }
 
 fn expected_header_hash(contents: &[u8]) -> u64 {
-    let n = contents.len().min(HEADER_HASH_BYTES);
+    let n = contents.len().min(64 * 1024);
     seahash::hash(&contents[..n])
 }
 
@@ -31,6 +31,7 @@ fn test_target(dir: &Path) -> ScanTarget {
         paths: vec![dir.to_path_buf()],
         volume: Volume::new(dir.to_path_buf()),
         extensions: vec!["txt".into(), "bin".into(), "jpg".into()],
+        prefix_bytes: 64 * 1024,
     }
 }
 

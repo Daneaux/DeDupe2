@@ -44,6 +44,7 @@ fn main() {
         paths: vec![root.clone()],
         volume: Volume::new(root),
         extensions,
+        prefix_bytes: 64 * 1024,
     };
 
     {  // prime

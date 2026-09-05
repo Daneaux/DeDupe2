@@ -1,14 +1,11 @@
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use walkdir::WalkDir;
 
 use crate::exif::{creation_date, CreationDate};
+use crate::image_reader::{hash_all_bytes, hash_first_n_bytes};
 use crate::volumes::{FileType, Volume};
-
-pub const HEADER_HASH_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 enum HashKind {
@@ -22,6 +19,7 @@ pub struct ScanTarget {
     pub paths: Vec<PathBuf>,
     pub volume: Volume,
     pub extensions: Vec<String>,
+    pub prefix_bytes: usize,
 }
 
 impl ScanTarget {
@@ -97,8 +95,8 @@ fn scan_path(root: &Path, kind: HashKind, target: &ScanTarget, files: &mut Vec<S
         };
         let path = entry.into_path();
         let hash = match kind {
-            HashKind::Header => hash_header(&path),
-            HashKind::Full => hash_full(&path),
+            HashKind::Header => hash_first_n_bytes(&path, target.prefix_bytes).unwrap_or(0),
+            HashKind::Full => hash_all_bytes(&path).unwrap_or(0),
         };
 
         files.push(ScannedFile {
@@ -119,23 +117,5 @@ pub(crate) fn file_type_of(path: &Path) -> FileType {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase(),
-    }
-}
-
-fn hash_header(path: &Path) -> u64 {
-    let mut file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => return 0,
-    };
-
-    let mut buf = [0u8; HEADER_HASH_BYTES];
-    let read = file.read(&mut buf).unwrap_or(0);
-    seahash::hash(&buf[..read])
-}
-
-fn hash_full(path: &Path) -> u64 {
-    match std::fs::read(path) {
-        Ok(bytes) => seahash::hash(&bytes),
-        Err(_) => 0,
     }
 }
