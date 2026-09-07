@@ -8,7 +8,7 @@ axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 askama = { version = "0.12", features = ["with-axum"] }
 askama_axum = "0.4"
-tower-http = { version = "0.5", features = ["fs", "trace"] }
+tower-http = { version = "0.5", features = ["fs", "trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 walkdir = "2"
@@ -19,6 +19,8 @@ rawler = "0.8"
 chrono = "0.4"
 image = "0.25"
 heic = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Photo Tools{% endblock %}</title>
+  <link rel="stylesheet" href="/photo_tools/style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="site-header-inner">
+      <h1 class="site-title">📸 Photo Tools</h1>
+      <nav class="tab-bar" role="tablist">
+        <a href="/photo_tools/dedupe"
+           class="tab-link{% if active_tab == "dedupe" %} active{% endif %}"
+           role="tab">Folder Dedupe</a>
+        <a href="/photo_tools/originals"
+           class="tab-link{% if active_tab == "originals" %} active{% endif %}"
+           role="tab">Find Original Images</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="site-main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="/photo_tools/app.js"></script>
+</body>
+</html>

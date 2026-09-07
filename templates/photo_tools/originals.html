@@ -1,0 +1,46 @@
+{% extends "photo_tools/base.html" %}
+
+{% block title %}Find Original Images – Photo Tools{% endblock %}
+
+{% block content %}
+<section class="panel" role="tabpanel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Find Original Images</h2>
+      <span class="subtitle">Identify RAW / original files vs. processed versions</span>
+    </div>
+  </div>
+
+  <!-- Configuration -->
+  <div class="config-grid">
+    <div class="field">
+      <label for="scan-folder">Folder to scan</label>
+      <input type="text" id="scan-folder" placeholder="e.g. D:\Media\Camera" />
+    </div>
+  </div>
+
+  <div class="config-row">
+    <div class="segmented" role="group" aria-label="Match mode">
+      <button class="seg active" data-mode="exif">Match by EXIF Date</button>
+      <button class="seg" data-mode="name">Match by Filename</button>
+    </div>
+  </div>
+
+  <div class="action-bar">
+    <button class="btn btn-primary" id="btn-scan-originals">Scan for Originals</button>
+  </div>
+
+  <!-- Results -->
+  <div id="orig-results-area" class="results-area" hidden>
+    <h3 id="orig-summary">Results</h3>
+
+    <div class="legend">
+      <span class="legend-item"><span class="badge badge-orig">Original</span> RAW / source file</span>
+      <span class="legend-item"><span class="badge badge-deriv">Derived</span> Processed / export</span>
+      <span class="legend-item"><span class="badge badge-alone">Alone</span> No match found</span>
+    </div>
+
+    <div id="orig-groups"></div>
+  </div>
+</section>
+{% endblock %}

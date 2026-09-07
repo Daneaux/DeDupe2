@@ -533,6 +533,8 @@ dependencies = [
  "rawler",
  "rayon",
  "seahash",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tower-http",

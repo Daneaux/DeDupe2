@@ -1,0 +1,55 @@
+{% extends "photo_tools/base.html" %}
+
+{% block title %}Folder Dedupe – Photo Tools{% endblock %}
+
+{% block content %}
+<section class="panel" role="tabpanel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Folder Dedupe</h2>
+      <span class="subtitle">Find and merge duplicate files across two folders</span>
+    </div>
+  </div>
+
+  <!-- Configuration -->
+  <div class="config-grid">
+    <div class="field">
+      <label for="folder-a">Folder A</label>
+      <input type="text" id="folder-a" placeholder="e.g. D:\Media\Camera" />
+    </div>
+    <div class="field">
+      <label for="folder-b">Folder B</label>
+      <input type="text" id="folder-b" placeholder="e.g. D:\Media\Backup" />
+    </div>
+    <div class="field">
+      <label for="dst-folder">Destination folder</label>
+      <input type="text" id="dst-folder" placeholder="e.g. D:\Media\Merged" />
+    </div>
+  </div>
+
+  <div class="config-row">
+    <div class="segmented" role="group" aria-label="Duplicate strategy">
+      <button class="seg active" data-strategy="exact">Exact Hash</button>
+      <button class="seg" data-strategy="image">Image Data</button>
+    </div>
+
+    <div class="segmented" role="group" aria-label="Operation">
+      <button class="seg active" data-op="move">Move</button>
+      <button class="seg" data-op="copy">Copy</button>
+    </div>
+  </div>
+
+  <div class="action-bar">
+    <button class="btn btn-primary" id="btn-find-dupes">Find Duplicates</button>
+    <button class="btn btn-secondary" id="btn-merge" disabled>Merge Folders</button>
+  </div>
+
+  <!-- Results -->
+  <div id="results-area" class="results-area" hidden>
+    <h3 id="results-summary">Results</h3>
+    <div id="dup-groups"></div>
+
+    <div id="merge-result" class="merge-result" hidden></div>
+  </div>
+</section>
+{% endblock %}
