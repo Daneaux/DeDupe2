@@ -39,6 +39,26 @@ fn crw_sample() -> PathBuf {
 fn crw_sample_mod_exif() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_crw-exif.CRW")
 }
+fn orf_sample() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_orf.ORF")
+}
+fn orf_sample_mod_exif() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_orf-exif.ORF")
+}
+
+fn tiff_sample() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_tiff.tif")
+}
+fn tiff_sample_mod_exif() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_tiff-exif.tif")
+}
+
+fn rw2_sample() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_rw2.RW2")
+}
+fn rw2_sample_mod_exif() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_rw2-exif.RW2")
+}
 
 
 #[test]
@@ -186,3 +206,46 @@ fn crw_exif_data_different_but_image_data_same() {
     assert_eq!(imagedata1, imagedata2);
     assert_ne!(filedata1, filedata2);
 }
+
+#[test]
+fn orf_exif_data_different_but_image_data_same() {
+    let limit = ReadLimit::First(64 * 1024);
+
+    let imagedata1 = read_image_data(&orf_sample(), limit).unwrap();
+    let imagedata2 = read_image_data(&orf_sample_mod_exif(), limit).unwrap();
+
+    let filedata1 = read_bytes(&orf_sample(), ReadLimit::All).unwrap();
+    let filedata2 = read_bytes(&orf_sample_mod_exif(), ReadLimit::All).unwrap();
+
+    assert_eq!(imagedata1, imagedata2);
+    assert_ne!(filedata1, filedata2);
+}
+
+#[test]
+fn tiff_exif_data_different_but_image_data_same() {
+    let limit = ReadLimit::First(64 * 1024);
+
+    let imagedata1 = read_image_data(&tiff_sample(), limit).unwrap();
+    let imagedata2 = read_image_data(&tiff_sample_mod_exif(), limit).unwrap();
+
+    let filedata1 = read_bytes(&tiff_sample(), ReadLimit::All).unwrap();
+    let filedata2 = read_bytes(&tiff_sample_mod_exif(), ReadLimit::All).unwrap();
+
+    assert_eq!(imagedata1, imagedata2);
+    assert_ne!(filedata1, filedata2);
+}
+
+#[test]
+fn rw2_exif_data_different_but_image_data_same() {
+    let limit = ReadLimit::First(64 * 1024);
+
+    let imagedata1 = read_image_data(&rw2_sample(), limit).unwrap();
+    let imagedata2 = read_image_data(&rw2_sample_mod_exif(), limit).unwrap();
+
+    let filedata1 = read_bytes(&rw2_sample(), ReadLimit::All).unwrap();
+    let filedata2 = read_bytes(&rw2_sample_mod_exif(), ReadLimit::All).unwrap();
+
+    assert_eq!(imagedata1, imagedata2);
+    assert_ne!(filedata1, filedata2);
+}
+

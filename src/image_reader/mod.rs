@@ -53,10 +53,10 @@ fn detect_file_type(path: &Path) -> Result<FileType, ImageReaderError> {
 const RAW_EXTENSIONS: &[&str] = &[
     "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "rw2", "orf", "pef", "raf",
     "dng", "srw", "x3f", "iiq", "erf", "3fr", "kdc", "dcr", "dcs", "mef", "mos", "mrw",
-    "raw", "rwl", "fff", "bay", "ari",
+    "raw", "rwl", "fff", "bay", "ari", "tif", "tiff",
 ];
 
 const IMAGE_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "webp", "gif", "bmp", "tif", "tiff", "ico", "pnm", "pbm",
+    "jpg", "jpeg", "png", "webp", "gif", "bmp", "ico", "pnm", "pbm",
     "pgm", "ppm", "pam", "qoi", "avif", "hdr", "exr", "ff",
 ];

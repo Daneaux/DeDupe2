@@ -55,6 +55,21 @@ impl From<crate::image_reader::ImageReaderError> for FileMoverError {
     }
 }
 
+#[derive(Debug)]
+pub struct MergeOutcome {
+    pub kept: Vec<PathBuf>,
+    pub purged: Vec<PathBuf>,
+}
+
+pub fn merge_libraries(
+    _sources: &[PathBuf],
+    _destination: &Path,
+    _purgatory: &Path,
+    _op: Operation,
+) -> Result<MergeOutcome, FileMoverError> {
+    todo!("implement merge_libraries")
+}
+
 pub fn relocate_tree(src: &Path, dst: &Path, op: Operation) -> Result<(), FileMoverError> {
     for entry in WalkDir::new(src) {
         let entry = entry?;

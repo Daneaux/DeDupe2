@@ -25,6 +25,11 @@ pub fn raw_data(data: &[u8]) -> Option<Vec<u8>> {
                 track(&mut best, bytes);
             }
         }
+        if ifd.has_entry(TiffCommonTag::PanaOffsets) {
+            if let Some(bytes) = panasonic_bytes(&src, ifd) {
+                track(&mut best, bytes);
+            }
+        }
     }
 
     best
@@ -66,4 +71,9 @@ fn tile_bytes(src: &RawSource, ifd: &IFD) -> Option<Vec<u8>> {
         out.extend_from_slice(t);
     }
     Some(out)
+}
+
+fn panasonic_bytes(src: &RawSource, ifd: &IFD) -> Option<Vec<u8>> {
+    let offset = ifd.get_entry(TiffCommonTag::PanaOffsets)?.value.force_usize(0);
+    src.subview_until_eof(offset as u64).ok().map(|s| s.to_vec())
 }

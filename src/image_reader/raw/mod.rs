@@ -62,11 +62,20 @@ fn detect(data: &[u8]) -> Option<RawFormat> {
     if data.len() >= 8 && &data[4..8] == b"ftyp" {
         return Some(RawFormat::Cr3);
     }
-    if data.len() >= 8 && (&data[0..2] == b"II" || &data[0..2] == b"MM") {
-        let magic = &data[2..4];
-        if magic == b"\x2A\x00" || magic == b"\x00\x2A" {
-            return Some(RawFormat::Tiff);
-        }
+    if is_tiff(data) {
+        return Some(RawFormat::Tiff);
     }
     None
+}
+
+fn is_tiff(data: &[u8]) -> bool {
+    if data.len() < 4 {
+        return false;
+    }
+    let magic = match &data[0..2] {
+        b"II" => u16::from_le_bytes([data[2], data[3]]),
+        b"MM" => u16::from_be_bytes([data[2], data[3]]),
+        _ => return false,
+    };
+    matches!(magic, 42 | 85 | 21330 | 20306)
 }
