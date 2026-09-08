@@ -27,6 +27,18 @@ fn cr2_sample() -> PathBuf {
 fn cr2_sample_mod_exif() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_cr2-exif.CR2")
 }
+fn cr3_sample() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_cr3.CR3")
+}
+fn cr3_sample_mod_exif() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_cr3-exif.CR3")
+}
+fn crw_sample() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_crw.CRW")
+}
+fn crw_sample_mod_exif() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_crw-exif.CRW")
+}
 
 
 #[test]
@@ -145,4 +157,32 @@ fn raf_decoded_image_data_same() {
         (PixelData::U16(x), PixelData::U16(y)) => assert_eq!(x, y),
         _ => panic!("expected raw U16 samples"),
     }
+}
+
+#[test]
+fn cr3_exif_data_different_but_image_data_same() {
+    let limit = ReadLimit::First(64 * 1024);
+
+    let imagedata1 = read_image_data(&cr3_sample(), limit).unwrap();
+    let imagedata2 = read_image_data(&cr3_sample_mod_exif(), limit).unwrap();
+
+    let filedata1 = read_bytes(&cr3_sample(), limit).unwrap();
+    let filedata2 = read_bytes(&cr3_sample_mod_exif(), limit).unwrap();
+
+    assert_eq!(imagedata1, imagedata2);
+    assert_ne!(filedata1, filedata2);
+}
+
+#[test]
+fn crw_exif_data_different_but_image_data_same() {
+    let limit = ReadLimit::First(64 * 1024);
+
+    let imagedata1 = read_image_data(&crw_sample(), limit).unwrap();
+    let imagedata2 = read_image_data(&crw_sample_mod_exif(), limit).unwrap();
+
+    let filedata1 = read_bytes(&crw_sample(), ReadLimit::All).unwrap();
+    let filedata2 = read_bytes(&crw_sample_mod_exif(), ReadLimit::All).unwrap();
+
+    assert_eq!(imagedata1, imagedata2);
+    assert_ne!(filedata1, filedata2);
 }

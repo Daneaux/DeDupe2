@@ -6,7 +6,6 @@ mod cr3;
 mod crw;
 mod raf;
 mod tiff;
-mod x3f;
 
 fn load_raw(path: &Path) -> Result<rawler::RawImage, ImageReaderError> {
     let loader = rawler::RawLoader::new();
@@ -16,7 +15,8 @@ fn load_raw(path: &Path) -> Result<rawler::RawImage, ImageReaderError> {
 }
 
 pub fn decode(path: &Path) -> Result<ImageData, ImageReaderError> {
-    let raw = load_raw(path)?;
+    let mut raw = load_raw(path)?;
+    raw.data.force_integer();
 
     Ok(ImageData {
         width: raw.width,
@@ -26,14 +26,22 @@ pub fn decode(path: &Path) -> Result<ImageData, ImageReaderError> {
     })
 }
 
+#[derive(Debug, Clone, Copy)]
+enum RawFormat {
+    Tiff,
+    Raf,
+    Cr3,
+    Crw,
+}
+
 pub fn image_data(path: &Path, limit: ReadLimit) -> Result<Vec<u8>, ImageReaderError> {
     let data = std::fs::read(path).map_err(|e| ImageReaderError::new(e.to_string()))?;
+
     let raw = match detect(&data) {
         Some(RawFormat::Tiff) => tiff::raw_data(&data),
         Some(RawFormat::Raf) => raf::raw_data(&data),
         Some(RawFormat::Cr3) => cr3::raw_data(&data),
         Some(RawFormat::Crw) => crw::raw_data(&data),
-        Some(RawFormat::X3f) => x3f::raw_data(&data),
         None => None,
     }
     .ok_or_else(|| ImageReaderError::new("could not locate raw image data"))?;
@@ -42,15 +50,6 @@ pub fn image_data(path: &Path, limit: ReadLimit) -> Result<Vec<u8>, ImageReaderE
         ReadLimit::All => raw,
         ReadLimit::First(n) => raw[..raw.len().min(n)].to_vec(),
     })
-}
-
-#[derive(Debug, Clone, Copy)]
-enum RawFormat {
-    Tiff,
-    Raf,
-    Cr3,
-    Crw,
-    X3f,
 }
 
 fn detect(data: &[u8]) -> Option<RawFormat> {
@@ -62,9 +61,6 @@ fn detect(data: &[u8]) -> Option<RawFormat> {
     }
     if data.len() >= 8 && &data[4..8] == b"ftyp" {
         return Some(RawFormat::Cr3);
-    }
-    if data.len() >= 4 && &data[0..4] == b"FOVb" {
-        return Some(RawFormat::X3f);
     }
     if data.len() >= 8 && (&data[0..2] == b"II" || &data[0..2] == b"MM") {
         let magic = &data[2..4];

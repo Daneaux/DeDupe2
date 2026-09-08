@@ -1,137 +1,69 @@
-#[derive(Clone, Copy)]
-enum Endian {
-    Little,
-    Big,
-}
+use rawler::formats::tiff::reader::TiffReader;
+use rawler::formats::tiff::{GenericTiffReader, IFD};
+use rawler::rawsource::RawSource;
+use rawler::tags::TiffCommonTag;
 
-impl Endian {
-    fn u16(&self, data: &[u8], pos: usize) -> Option<u16> {
-        let b = data.get(pos..pos + 2)?;
-        Some(match self {
-            Endian::Little => u16::from_le_bytes([b[0], b[1]]),
-            Endian::Big => u16::from_be_bytes([b[0], b[1]]),
-        })
+pub fn raw_data(data: &[u8]) -> Option<Vec<u8>> {
+    let src = RawSource::new_from_slice(data);
+    let mut reader = src.reader();
+    let tiff = GenericTiffReader::new(&mut reader, 0, 0, None, &[]).ok()?;
+
+    let mut ifds: Vec<&IFD> = Vec::new();
+    for ifd in tiff.chains() {
+        collect(ifd, &mut ifds);
     }
 
-    fn u32(&self, data: &[u8], pos: usize) -> Option<u32> {
-        let b = data.get(pos..pos + 4)?;
-        Some(match self {
-            Endian::Little => u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-            Endian::Big => u32::from_be_bytes([b[0], b[1], b[2], b[3]]),
-        })
-    }
-}
-
-fn detect_endian(data: &[u8]) -> Option<Endian> {
-    match data.get(0..2)? {
-        b"II" => Some(Endian::Little),
-        b"MM" => Some(Endian::Big),
-        _ => None,
-    }
-}
-
-fn type_size(ftype: u16) -> usize {
-    match ftype {
-        1 | 2 | 6 | 7 => 1,
-        3 | 8 => 2,
-        4 | 9 | 11 => 4,
-        5 | 10 | 12 => 8,
-        _ => 4,
-    }
-}
-
-fn ifd_entries(data: &[u8], ifd: usize, endian: Endian) -> Option<Vec<(u16, u16, u32, u32)>> {
-    let count = endian.u16(data, ifd)? as usize;
-    let mut entries = Vec::with_capacity(count);
-    for i in 0..count {
-        let pos = ifd + 2 + i * 12;
-        let tag = endian.u16(data, pos)?;
-        let ftype = endian.u16(data, pos + 2)?;
-        let fcount = endian.u32(data, pos + 4)?;
-        let value = endian.u32(data, pos + 8)?;
-        entries.push((tag, ftype, fcount, value));
-    }
-    Some(entries)
-}
-
-fn read_values(data: &[u8], value: u32, count: u32, ftype: u16, endian: Endian) -> Vec<u32> {
-    let tsize = type_size(ftype);
-    let mut out = Vec::with_capacity(count as usize);
-    if count as usize * tsize <= 4 {
-        out.push(value);
-    } else {
-        for i in 0..count as usize {
-            let pos = value as usize + i * tsize;
-            let v = match tsize {
-                1 => *data.get(pos).unwrap_or(&0) as u32,
-                2 => endian.u16(data, pos).unwrap_or(0) as u32,
-                4 => endian.u32(data, pos).unwrap_or(0),
-                _ => 0,
-            };
-            out.push(v);
+    let mut best: Option<Vec<u8>> = None;
+    for ifd in ifds {
+        if ifd.has_entry(TiffCommonTag::StripOffsets) {
+            if let Some(bytes) = strip_bytes(&src, ifd) {
+                track(&mut best, bytes);
+            }
         }
-    }
-    out
-}
-
-fn sub_ifd_offsets(data: &[u8], ifd0: usize, endian: Endian) -> Vec<usize> {
-    let entries = match ifd_entries(data, ifd0, endian) {
-        Some(e) => e,
-        None => return Vec::new(),
-    };
-    let mut subs = Vec::new();
-    for (tag, ftype, count, value) in entries {
-        if tag == 0x14A {
-            for v in read_values(data, value, count, ftype, endian) {
-                subs.push(v as usize);
+        if ifd.has_entry(TiffCommonTag::TileOffsets) {
+            if let Some(bytes) = tile_bytes(&src, ifd) {
+                track(&mut best, bytes);
             }
         }
     }
-    subs
+
+    best
 }
 
-pub fn raw_data(data: &[u8]) -> Option<Vec<u8>> {
-    let endian = detect_endian(data)?;
-
-    let mut candidates = Vec::new();
-    if data.len() >= 12 && &data[8..12] == b"CR\x02\0" {
-        if let Some(off) = endian.u32(data, 12) {
-            candidates.push(off as usize);
-        }
-    } else {
-        let ifd0 = endian.u32(data, 4)? as usize;
-        candidates.push(ifd0);
-        candidates.extend(sub_ifd_offsets(data, ifd0, endian));
-    }
-
-    for ifd in candidates {
-        if let Some(bytes) = extract_strips(data, ifd, endian) {
-            return Some(bytes);
+fn collect<'a>(ifd: &'a IFD, out: &mut Vec<&'a IFD>) {
+    out.push(ifd);
+    for subs in ifd.sub_ifds().values() {
+        for s in subs {
+            collect(s, out);
         }
     }
-    None
 }
 
-fn extract_strips(data: &[u8], ifd: usize, endian: Endian) -> Option<Vec<u8>> {
-    let entries = ifd_entries(data, ifd, endian)?;
-    let mut offsets: Vec<u32> = Vec::new();
-    let mut counts: Vec<u32> = Vec::new();
-    for (tag, ftype, count, value) in entries {
-        match tag {
-            0x111 | 0x144 => offsets = read_values(data, value, count, ftype, endian),
-            0x117 | 0x145 => counts = read_values(data, value, count, ftype, endian),
-            _ => {}
-        }
+fn track(best: &mut Option<Vec<u8>>, bytes: Vec<u8>) {
+    if best.as_ref().map_or(true, |b| bytes.len() > b.len()) {
+        *best = Some(bytes);
     }
-    if offsets.is_empty() || offsets.len() != counts.len() {
-        return None;
-    }
+}
 
+fn strip_bytes(src: &RawSource, ifd: &IFD) -> Option<Vec<u8>> {
+    let (strips, cont) = ifd.strip_data(src).ok()?;
+    Some(match cont {
+        Some(c) => c.to_vec(),
+        None => {
+            let mut out = Vec::new();
+            for s in strips {
+                out.extend_from_slice(s);
+            }
+            out
+        }
+    })
+}
+
+fn tile_bytes(src: &RawSource, ifd: &IFD) -> Option<Vec<u8>> {
+    let tiles = ifd.tile_data(src).ok()?;
     let mut out = Vec::new();
-    for (o, l) in offsets.iter().zip(counts.iter()) {
-        let start = *o as usize;
-        let end = start + *l as usize;
-        out.extend_from_slice(data.get(start..end)?);
+    for t in tiles {
+        out.extend_from_slice(t);
     }
     Some(out)
 }

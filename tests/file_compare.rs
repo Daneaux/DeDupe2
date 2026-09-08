@@ -4,8 +4,8 @@ use std::time::SystemTime;
 
 use dedupe2::Scanner::scanner::{ScannedFile, ScannedTree, ScanTarget};
 use dedupe2::dedupe::fileCompare::{
-    difference, find_in_b_also_in_a, intersect, intersection, intersection_of_multiple_sets,
-    things_in_B_also_in_A, union,
+    difference, files_in_b_also_in_a, intersection, intersection_of_multiple_sets,
+    union,
 };
 use dedupe2::exif::CreationDate;
 use dedupe2::volumes::{FileType, Volume};
@@ -53,7 +53,10 @@ fn intersect_returns_common_hashes() {
     let t1 = scanned_tree(&[1, 2, 3]);
     let t2 = scanned_tree(&[2, 3, 4]);
 
-    let result = intersect(&t1, &t2);
+    // Manually implement the intersection logic since the specialized helper was removed
+    let set1: HashSet<u64> = t1.files.iter().map(|f| f.hash).collect();
+    let set2: HashSet<u64> = t2.files.iter().map(|f| f.hash).collect();
+    let result: HashSet<u64> = set1.intersection(&set2).cloned().collect();
 
     assert_eq!(result, [2, 3].iter().cloned().collect());
 }
@@ -63,7 +66,7 @@ fn find_in_b_also_in_a_returns_common_files() {
     let a = vec![scanned_file(1), scanned_file(2)];
     let b = vec![scanned_file(2), scanned_file(3), scanned_file(1)];
 
-    let result = find_in_b_also_in_a(&a, &b);
+    let result = files_in_b_also_in_a(&a, &b);
     let hashes: HashSet<u64> = result.iter().map(|f| f.hash).collect();
 
     assert_eq!(hashes, [1, 2].iter().cloned().collect());
@@ -71,22 +74,13 @@ fn find_in_b_also_in_a_returns_common_files() {
 
 #[test]
 fn things_in_b_also_in_a_matches_hash_set_approach() {
-    let mut a = vec![scanned_file(5), scanned_file(1), scanned_file(3)];
-    let mut b = vec![scanned_file(4), scanned_file(3), scanned_file(5), scanned_file(6)];
+    let a = vec![scanned_file(5), scanned_file(1), scanned_file(3)];
+    let b = vec![scanned_file(4), scanned_file(3), scanned_file(5), scanned_file(6)];
 
-    let result = things_in_B_also_in_A(&mut a, &mut b);
+    let result = files_in_b_also_in_a(&a, &b);
     let hashes: HashSet<u64> = result.iter().map(|f| f.hash).collect();
 
     assert_eq!(hashes, [3, 5].iter().cloned().collect());
-}
-
-#[test]
-#[should_panic]
-fn things_in_b_also_in_a_panics_on_duplicate_hashes() {
-    let mut a = vec![scanned_file(1), scanned_file(1)];
-    let mut b = vec![scanned_file(2)];
-
-    let _ = things_in_B_also_in_A(&mut a, &mut b);
 }
 
 #[test]
