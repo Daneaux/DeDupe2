@@ -17,3 +17,12 @@ pub fn hash_image_data(path: &Path, limit: ReadLimit) -> Result<u64, ImageReader
     let data = super::read_image_data(path, limit)?;
     Ok(seahash::hash(&data))
 }
+
+/// Hash the first `n` bytes of a file's encoded image data, falling back to the
+/// whole-file hash when the file isn't a recognized image.
+pub fn hash_image_data_n(path: &Path, n: usize) -> u64 {
+    match hash_image_data(path, ReadLimit::First(n)) {
+        Ok(hash) => hash,
+        Err(_) => hash_all_bytes(path).unwrap_or(0),
+    }
+}

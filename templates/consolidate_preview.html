@@ -1,0 +1,40 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Consolidate Preview</h2>
+      <span class="subtitle">{{ foldings }} folder groups · {{ purged_total }} duplicates to remove</span>
+    </div>
+  </div>
+
+  {% if entries.len() == 0 %}
+  <p class="placeholder">No folders to merge (no two share the same date).</p>
+  {% else %}
+  <div class="merge-groups">
+    {% for entry in entries %}
+    <article class="merge-group">
+      <div class="merge-kept">
+        <span class="badge badge-ok">Merge</span>
+        <span class="path">{{ entry.header }}</span>
+      </div>
+      <div class="merge-purged">
+        <span class="badge badge-muted">{{ entry.moved_count }} kept</span>
+      </div>
+      {% for p in entry.purged %}
+      <div class="merge-purged">
+        <span class="badge badge-dirty">Remove</span>
+        <span class="path">{{ p }}</span>
+      </div>
+      {% endfor %}
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form method="post" action="/consolidate/run" id="consolidate-run-form" class="merge-form merge-confirm">
+    <input type="hidden" name="dir" value="{{ dir }}" />
+    <input type="hidden" name="purgatory" value="{{ purgatory }}" />
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary">Consolidate now</button>
+    </div>
+  </form>
+</section>

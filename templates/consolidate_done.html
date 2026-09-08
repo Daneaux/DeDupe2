@@ -1,0 +1,32 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Consolidation Complete</h2>
+      <span class="subtitle">Merged folders and removed duplicates</span>
+    </div>
+  </div>
+
+  <div class="merge-summary">
+    <div class="summary-stat">
+      <span class="summary-value">{{ folded }}</span>
+      <span class="summary-label">folders merged</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ moved }}</span>
+      <span class="summary-label">files kept</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ purged }}</span>
+      <span class="summary-label">duplicates removed</span>
+    </div>
+  </div>
+
+  <dl class="merge-paths">
+    <dt>Purgatory</dt>
+    <dd class="path">{{ purgatory }}</dd>
+  </dl>
+
+  <div class="toolbar-actions">
+    <a class="btn btn-primary" href="/consolidate">Consolidate another</a>
+  </div>
+</section>

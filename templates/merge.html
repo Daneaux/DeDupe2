@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel" role="tabpanel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Merge Libraries</h2>
+      <span class="subtitle">Find and merge duplicate photos across peer libraries</span>
+    </div>
+  </div>
+
+  <form method="post" action="/merge/preview" id="merge-form">
+    <label class="field">
+      <span>Source libraries</span>
+      <textarea name="sources" rows="6" placeholder="/path/to/lib1&#10;/path/to/lib2"></textarea>
+      <span class="hint">One library root per line. Each root should contain <code>yyyy/mm-dd &lt;desc&gt;</code> folders.</span>
+    </label>
+
+    <label class="field">
+      <span>Destination</span>
+      <input type="text" name="destination" placeholder="/path/to/merged" />
+      <span class="hint">Kept files are merged here.</span>
+    </label>
+
+    <label class="field">
+      <span>Purgatory (optional)</span>
+      <input type="text" name="purgatory" placeholder="defaults to &lt;source-root&gt;/purgatory" />
+      <span class="hint">Removed duplicates are mirrored here.</span>
+    </label>
+
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary">Preview</button>
+    </div>
+  </form>
+</section>
+
+<div id="merge-progress" class="merge-progress" hidden>
+  <div class="merge-progress-label" id="merge-progress-text">Working…</div>
+  <div class="merge-progress-track"><div class="merge-progress-fill" id="merge-progress-fill"></div></div>
+</div>
+
+<div id="merge-result"></div>
+
+<script src="/static/merge.js"></script>
+{% endblock %}

@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
 
 use rayon::prelude::*;
@@ -6,25 +7,56 @@ use walkdir::WalkDir;
 
 use crate::Scanner::scanner::{file_type_of, ScanTarget, ScannedFile, ScannedTree};
 use crate::exif::creation_date;
-use crate::image_reader::hash_first_n_bytes;
+use crate::image_reader::hash_image_data_n;
+
+/// Hash the first `prefix_bytes` of each file's encoded image data, in
+/// parallel. `progress(done, total)` is invoked once per completed file.
+pub fn hash_image_data_parallel(
+    paths: &[PathBuf],
+    prefix_bytes: usize,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Vec<u64> {
+    let total = paths.len();
+    let done = AtomicUsize::new(0);
+
+    paths
+        .par_iter()
+        .map(|path| {
+            let hash = hash_image_data_n(path, prefix_bytes);
+            progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
+            hash
+        })
+        .collect()
+}
 
 pub fn fast_scan(target: &ScanTarget) -> ScannedTree {
+    fast_scan_with_progress(target, &|_, _| {})
+}
+
+pub fn fast_scan_with_progress(
+    target: &ScanTarget,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> ScannedTree {
     let files = collect_files(target);
     let prefix_bytes = target.prefix_bytes;
 
+    let paths: Vec<PathBuf> = files.iter().map(|(p, _, _)| p.clone()).collect();
+    let hashes = hash_image_data_parallel(&paths, prefix_bytes, progress);
+
     let scanned_files: Vec<ScannedFile> = files
-        .par_iter()
-        .filter_map(|(path, size, modified)| {
-            hash_first_n_bytes(path, prefix_bytes)
-                .ok()
-                .map(|hash| ScannedFile {
-                    path: path.clone(),
-                    size: *size,
-                    modified: *modified,
-                    file_type: file_type_of(path),
-                    hash,
-                    creation_date: creation_date(path),
-                })
+        .into_iter()
+        .zip(hashes)
+        .map(|((path, size, modified), hash)| {
+            let file_type = file_type_of(&path);
+            let creation_date = creation_date(&path);
+            ScannedFile {
+                path,
+                size,
+                modified,
+                file_type,
+                hash,
+                creation_date,
+            }
         })
         .collect();
 

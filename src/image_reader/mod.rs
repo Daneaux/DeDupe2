@@ -9,7 +9,7 @@ mod types;
 use std::path::Path;
 
 pub use bytes::read_bytes;
-pub use hash::{hash_all_bytes, hash_first_n_bytes, hash_image_data};
+pub use hash::{hash_all_bytes, hash_first_n_bytes, hash_image_data, hash_image_data_n};
 pub use types::{ImageData, ImageReaderError, PixelData, ReadLimit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,18 +36,35 @@ pub fn read_image_data(path: &Path, limit: ReadLimit) -> Result<Vec<u8>, ImageRe
 }
 
 fn detect_file_type(path: &Path) -> Result<FileType, ImageReaderError> {
-    let ext = path
-        .extension()
+    match extension_of(path) {
+        Some(ext) => match ext.as_str() {
+            "heic" | "heif" => Ok(FileType::Heic),
+            e if RAW_EXTENSIONS.contains(&e) => Ok(FileType::Raw),
+            e if IMAGE_EXTENSIONS.contains(&e) => Ok(FileType::Jpg),
+            _ => Err(ImageReaderError::new(format!("unsupported file type: .{ext}"))),
+        },
+        None => Err(ImageReaderError::new("file has no extension")),
+    }
+}
+
+/// Whether a path has a supported image extension (jpeg/heic/raw/etc.), and so
+/// should be considered during duplicate scanning and merging.
+pub fn is_supported_image(path: &Path) -> bool {
+    match extension_of(path) {
+        Some(ext) => {
+            ext == "heic"
+                || ext == "heif"
+                || RAW_EXTENSIONS.contains(&ext.as_str())
+                || IMAGE_EXTENSIONS.contains(&ext.as_str())
+        }
+        None => false,
+    }
+}
+
+fn extension_of(path: &Path) -> Option<String> {
+    path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
-        .ok_or_else(|| ImageReaderError::new("file has no extension"))?;
-
-    match ext.as_str() {
-        "heic" | "heif" => Ok(FileType::Heic),
-        e if RAW_EXTENSIONS.contains(&e) => Ok(FileType::Raw),
-        e if IMAGE_EXTENSIONS.contains(&e) => Ok(FileType::Jpg),
-        _ => Err(ImageReaderError::new(format!("unsupported file type: .{ext}"))),
-    }
 }
 
 const RAW_EXTENSIONS: &[&str] = &[

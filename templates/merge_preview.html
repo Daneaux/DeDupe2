@@ -1,0 +1,64 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Merge Preview</h2>
+      <span class="subtitle">{{ total_files }} files · {{ duplicate_groups }} duplicate groups · {{ to_purge }} to purge</span>
+    </div>
+  </div>
+
+  {% if groups.len() == 0 %}
+  <p class="placeholder">No duplicates found.</p>
+  {% else %}
+  <div class="merge-groups">
+    {% for group in groups %}
+    <article class="merge-group">
+      <div class="merge-kept">
+        <span class="badge badge-ok">Keep</span>
+        <span class="path">{{ group.kept_source }}</span>
+        <span class="arrow">&rarr;</span>
+        <span class="target">{{ group.kept_target }}</span>
+      </div>
+      {% for dup in group.purged %}
+      <div class="merge-purged">
+        <span class="badge badge-dirty">Purge</span>
+        <span class="path">{{ dup.source }}</span>
+        <span class="arrow">&rarr;</span>
+        <span class="target">{{ dup.target }}</span>
+      </div>
+      {% endfor %}
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if uniques.len() > 0 %}
+  <h3 class="section-label">Unique files ({{ uniques.len() }})</h3>
+  <div class="merge-groups">
+    {% for u in uniques %}
+    <div class="merge-kept merge-unique">
+      <span class="path">{{ u.source }}</span>
+      <span class="arrow">&rarr;</span>
+      <span class="target">{{ u.target }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form method="post" action="/merge/run" id="merge-run-form" class="merge-form merge-confirm">
+    <input type="hidden" name="sources" value="{{ sources }}" />
+    <input type="hidden" name="destination" value="{{ destination }}" />
+    <input type="hidden" name="purgatory" value="{{ purgatory }}" />
+
+    <label class="field">
+      <span>Operation</span>
+      <select name="op">
+        <option value="move" selected>Move (consolidate)</option>
+        <option value="copy">Copy (leave sources in place)</option>
+      </select>
+    </label>
+
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary">Merge now</button>
+    </div>
+  </form>
+</section>

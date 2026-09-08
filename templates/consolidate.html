@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel" role="tabpanel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Consolidate Folders</h2>
+      <span class="subtitle">Merge duplicate folders within a single year</span>
+    </div>
+  </div>
+
+  <form method="post" action="/consolidate/preview" id="consolidate-form">
+    <label class="field">
+      <span>Year folder</span>
+      <input type="text" name="dir" placeholder="/lib/photos/2008" />
+      <span class="hint">A folder whose children are events like <code>01-01</code> and <code>01-01 Hawaii</code>.</span>
+    </label>
+
+    <label class="field">
+      <span>Purgatory (optional)</span>
+      <input type="text" name="purgatory" placeholder="defaults to &lt;year&gt;-purgatory" />
+      <span class="hint">Removed duplicates are mirrored here.</span>
+    </label>
+
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary">Preview</button>
+    </div>
+  </form>
+</section>
+
+<div id="consolidate-progress" class="merge-progress" hidden>
+  <div class="merge-progress-label" id="consolidate-progress-text">Working…</div>
+  <div class="merge-progress-track"><div class="merge-progress-fill" id="consolidate-progress-fill"></div></div>
+</div>
+
+<div id="consolidate-result"></div>
+
+<script src="/static/consolidate.js"></script>
+{% endblock %}

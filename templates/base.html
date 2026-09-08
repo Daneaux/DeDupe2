@@ -10,14 +10,11 @@
   <header class="topbar">
     <div class="brand">{{ title }}</div>
     <nav class="tabs" role="tablist" aria-label="Primary">
-      <button class="tab active" data-target="panel-volumes" role="tab" aria-selected="true">Volume Manager</button>
-      <button class="tab" data-target="panel-duplicates" role="tab" aria-selected="false">Duplicates</button>
-      <button class="tab" data-target="panel-settings" role="tab" aria-selected="false">Settings</button>
+      <a class="tab tab-link active" href="/consolidate">Consolidate</a>
     </nav>
   </header>
   <main class="content">
     {% block content %}{% endblock %}
   </main>
-  <script src="/static/app.js"></script>
 </body>
 </html>

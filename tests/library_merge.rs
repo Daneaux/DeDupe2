@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use dedupe2::filemover::{merge_libraries, MergeOutcome, Operation};
+use dedupe2::filemover::{merge_libraries, preview_merge, MergeOutcome, Operation};
 
 /// Read a real sample image from the checked-in TestImages set.
 fn sample(rel: &str) -> Vec<u8> {
@@ -84,7 +84,7 @@ fn dedupe_with_64kb_encoded_image_data_and_merge() {
     let outcome: MergeOutcome = merge_libraries(
         &[lib_a.clone(), lib_b.clone()],
         &destination,
-        &purgatory,
+        Some(&purgatory),
         Operation::Move,
     )
     .unwrap();
@@ -126,5 +126,71 @@ fn dedupe_with_64kb_encoded_image_data_and_merge() {
     // Move consolidates: nothing is left behind in the sources.
     for lib in [&lib_a, &lib_b] {
         assert!(tree_rel(lib).is_empty(), "source {:?} should be emptied", lib);
+    }
+}
+
+#[test]
+fn purgatory_defaults_to_source_tree_root() {
+    let root = tempfile::tempdir().unwrap();
+    let lib_a = root.path().join("lib-a");
+    let lib_b = root.path().join("lib-b");
+    let destination = root.path().join("library");
+
+    let jpeg = sample("jpg-exif-mod/image1.JPG");
+    let jpeg_exif = sample("jpg-exif-mod/image1-exif.JPG");
+
+    write_file(&lib_a, "2004/05-12/beach.jpg", &jpeg);
+    write_file(&lib_b, "2004/05-12/beach-copy.jpg", &jpeg_exif);
+
+    // No purgatory path supplied: it must default to <common-parent>/purgatory.
+    let outcome = merge_libraries(
+        &[lib_a.clone(), lib_b.clone()],
+        &destination,
+        None,
+        Operation::Move,
+    )
+    .unwrap();
+
+    let default_purgatory = root.path().join("purgatory");
+    assert!(default_purgatory.exists());
+
+    // beach.jpg (shorter) is kept; beach-copy.jpg is purged into the default tree.
+    assert_eq!(outcome.kept.len(), 1);
+    assert_eq!(outcome.purged.len(), 1);
+    assert!(default_purgatory.join("2004/05-12/beach-copy.jpg").exists());
+    assert!(destination.join("2004/05-12/beach.jpg").exists());
+}
+
+#[test]
+fn preview_merge_reports_groups_without_moving_files() {
+    let root = tempfile::tempdir().unwrap();
+    let lib_a = root.path().join("lib-a");
+    let lib_b = root.path().join("lib-b");
+    let destination = root.path().join("library");
+
+    let jpeg = sample("jpg-exif-mod/image1.JPG");
+    let jpeg_exif = sample("jpg-exif-mod/image1-exif.JPG");
+    let heic = sample("HEIC-exif-mod/heic1.HEIC");
+
+    write_file(&lib_a, "2004/05-12 Hawaii/beach.jpg", &jpeg);
+    write_file(&lib_a, "2004/05-12 Hawaii/beach-copy.jpg", &jpeg);
+    write_file(&lib_b, "2004/05-12/vacation-photo.jpg", &jpeg_exif);
+    write_file(&lib_a, "2004/06-01/dinner.heic", &heic);
+
+    let plan = preview_merge(&[lib_a.clone(), lib_b.clone()], &destination, None).unwrap();
+
+    // Three files share the JPEG group, one is a unique HEIC.
+    assert_eq!(plan.duplicate_groups.len(), 1);
+    assert_eq!(plan.duplicate_groups[0].purged.len(), 2);
+    assert_eq!(plan.uniques.len(), 1);
+    assert!(destination
+        .display()
+        .to_string()
+        .ends_with("library"));
+    assert_eq!(plan.purgatory, root.path().join("purgatory"));
+
+    // Preview must not touch disk.
+    for lib in [&lib_a, &lib_b] {
+        assert!(!tree_rel(lib).is_empty(), "preview must not move files");
     }
 }
