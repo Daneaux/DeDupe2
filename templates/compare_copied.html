@@ -1,0 +1,30 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Copy Complete</h2>
+      <span class="subtitle">Originals with valid EXIF copied to the destination</span>
+    </div>
+  </div>
+
+  <div class="merge-summary">
+    <div class="summary-stat">
+      <span class="summary-value">{{ copied }}</span>
+      <span class="summary-label">copied</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ skipped }}</span>
+      <span class="summary-label">skipped (no EXIF)</span>
+    </div>
+  </div>
+
+  <dl class="merge-paths">
+    <dt>Destination</dt>
+    <dd class="path">{{ destination }}</dd>
+    <dt>Format</dt>
+    <dd class="path">{{ format }}</dd>
+  </dl>
+
+  <div class="toolbar-actions">
+    <a class="btn btn-primary" href="/compare">Compare again</a>
+  </div>
+</section>

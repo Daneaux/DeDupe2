@@ -1,0 +1,56 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Originals — EXIF scan</h2>
+      <span class="subtitle">{{ valid_count }} with EXIF · {{ invalid_count }} without</span>
+    </div>
+  </div>
+
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Originals</span>
+      <span class="badge badge-ok">{{ valid_count }}</span>
+      <span class="collection-sub">with valid EXIF</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Path</th><th>EXIF date</th><th>Destination</th></tr></thead>
+        <tbody>
+          {% for r in rows %}
+          <tr class="{% if r.valid %}row-a{% else %}row-b{% endif %}">
+            <td class="path">{{ r.path }}</td>
+            <td class="muted">{{ r.date }}</td>
+            <td class="muted">{{ r.destination }}</td>
+          </tr>
+          {% endfor %}
+          {% if rows.len() == 0 %}
+          <tr><td colspan="3" class="muted">None.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+
+  <form method="post" action="/compare/copy" id="compare-copy-form" class="merge-form">
+    <input type="hidden" name="originals" value="{{ originals_input }}" />
+    <label class="field">
+      <span>Destination folder</span>
+      <input type="text" name="destination" value="{{ a }}" />
+    </label>
+    <label class="field">
+      <span>Destination format</span>
+      <input type="text" name="format" value="YYYY/MM-DD <folder description>" />
+      <span class="hint">Tokens: YYYY, MM, DD from the EXIF date; <code>&lt;folder description&gt;</code> (or DESC) from the source folder name.</span>
+    </label>
+    <label class="field">
+      <span>Operation</span>
+      <select name="op" id="copy-op-select">
+        <option value="copy" selected>Copy (leave in B)</option>
+        <option value="move">Move (remove from B)</option>
+      </select>
+    </label>
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary" {% if valid_count == 0 %}disabled{% endif %}><span id="transfer-label">Copy</span> {{ valid_count }} photos with EXIF</button>
+    </div>
+  </form>
+</section>

@@ -9,7 +9,10 @@ mod types;
 use std::path::Path;
 
 pub use bytes::read_bytes;
-pub use hash::{hash_all_bytes, hash_first_n_bytes, hash_image_data, hash_image_data_n};
+pub use hash::{
+    hash_all_bytes, hash_first_n_bytes, hash_image_data, hash_image_data_n,
+    hash_image_data_status,
+};
 pub use types::{ImageData, ImageReaderError, PixelData, ReadLimit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

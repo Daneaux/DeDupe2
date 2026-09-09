@@ -7,7 +7,16 @@ use walkdir::WalkDir;
 
 use crate::Scanner::scanner::{file_type_of, ScanTarget, ScannedFile, ScannedTree};
 use crate::exif::creation_date;
-use crate::image_reader::hash_image_data_n;
+use crate::image_reader::hash_image_data_status;
+
+/// Hash result per file: `decoded` is `true` when the hash came from the
+/// decoder, `false` when the file was unreadable and the raw-byte fallback
+/// was used.
+#[derive(Debug, Clone, Copy)]
+pub struct FileHash {
+    pub hash: u64,
+    pub decoded: bool,
+}
 
 /// Hash the first `prefix_bytes` of each file's encoded image data, in
 /// parallel. `progress(done, total)` is invoked once per completed file.
@@ -15,16 +24,16 @@ pub fn hash_image_data_parallel(
     paths: &[PathBuf],
     prefix_bytes: usize,
     progress: &(dyn Fn(usize, usize) + Send + Sync),
-) -> Vec<u64> {
+) -> Vec<FileHash> {
     let total = paths.len();
     let done = AtomicUsize::new(0);
 
     paths
         .par_iter()
         .map(|path| {
-            let hash = hash_image_data_n(path, prefix_bytes);
+            let (hash, decoded) = hash_image_data_status(path, prefix_bytes);
             progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
-            hash
+            FileHash { hash, decoded }
         })
         .collect()
 }
@@ -41,12 +50,12 @@ pub fn fast_scan_with_progress(
     let prefix_bytes = target.prefix_bytes;
 
     let paths: Vec<PathBuf> = files.iter().map(|(p, _, _)| p.clone()).collect();
-    let hashes = hash_image_data_parallel(&paths, prefix_bytes, progress);
+    let file_hashes = hash_image_data_parallel(&paths, prefix_bytes, progress);
 
     let scanned_files: Vec<ScannedFile> = files
         .into_iter()
-        .zip(hashes)
-        .map(|((path, size, modified), hash)| {
+        .zip(file_hashes)
+        .map(|((path, size, modified), fh)| {
             let file_type = file_type_of(&path);
             let creation_date = creation_date(&path);
             ScannedFile {
@@ -54,7 +63,7 @@ pub fn fast_scan_with_progress(
                 size,
                 modified,
                 file_type,
-                hash,
+                hash: fh.hash,
                 creation_date,
             }
         })

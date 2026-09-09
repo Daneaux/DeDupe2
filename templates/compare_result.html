@@ -1,0 +1,112 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Compare Results</h2>
+      <span class="subtitle">A: {{ a }} · B: {{ b }}</span>
+    </div>
+  </div>
+
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Destination A</span>
+      <span class="badge badge-ok">{{ a_only_count }}</span>
+      <span class="collection-sub">photos only in A</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Path</th></tr></thead>
+        <tbody>
+          {% for r in a_rows %}
+          <tr class="row-a"><td class="path">{{ r.path }}</td></tr>
+          {% endfor %}
+          {% if a_more > 0 %}
+          <tr class="more-row"><td class="muted">… {{ a_more }} more not shown</td></tr>
+          {% endif %}
+          {% if a_rows.len() == 0 %}
+          <tr><td class="muted">None.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Duplicates</span>
+      <span class="badge badge-dirty">{{ dup_total }}</span>
+      <span class="collection-sub">in both A and B</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Tree</th><th>Path</th></tr></thead>
+        <tbody>
+          {% for r in dup_rows %}
+          <tr class="{{ r.row_class }}">
+            <td><span class="badge badge-{{ r.badge }}">{{ r.tree }}</span></td>
+            <td class="path">{{ r.path }}</td>
+          </tr>
+          {% endfor %}
+          {% if dup_more > 0 %}
+          <tr class="more-row"><td colspan="3" class="muted">… {{ dup_more }} more not shown</td></tr>
+          {% endif %}
+          {% if dup_rows.len() == 0 %}
+          <tr><td colspan="3" class="muted">None.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Originals</span>
+      <span class="badge badge-ok">{{ b_only_count }}</span>
+      <span class="collection-sub">photos only in B</span>
+      <form method="post" action="/compare/exif" id="compare-exif-form">
+        <input type="hidden" name="originals" value="{{ originals_all }}" />
+        <input type="hidden" name="a" value="{{ a }}" />
+        <button type="submit" class="btn btn-small btn-primary">Scan for EXIF</button>
+      </form>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Path</th></tr></thead>
+        <tbody>
+          {% for r in b_rows %}
+          <tr class="row-b"><td class="path">{{ r.path }}</td></tr>
+          {% endfor %}
+          {% if b_more > 0 %}
+          <tr class="more-row"><td class="muted">… {{ b_more }} more not shown</td></tr>
+          {% endif %}
+          {% if b_rows.len() == 0 %}
+          <tr><td class="muted">None.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Unreadable</span>
+      <span class="badge badge-dirty">{{ unreadable_count }}</span>
+      <span class="collection-sub">could not be decoded</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Path</th></tr></thead>
+        <tbody>
+          {% for r in unreadable_rows %}
+          <tr class="row-b"><td class="path">{{ r.path }}</td></tr>
+          {% endfor %}
+          {% if unreadable_more > 0 %}
+          <tr class="more-row"><td class="muted">… {{ unreadable_more }} more not shown</td></tr>
+          {% endif %}
+          {% if unreadable_rows.len() == 0 %}
+          <tr><td class="muted">None.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+
+</section>

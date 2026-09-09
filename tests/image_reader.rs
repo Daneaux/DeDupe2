@@ -249,3 +249,19 @@ fn rw2_exif_data_different_but_image_data_same() {
     assert_ne!(filedata1, filedata2);
 }
 
+
+#[test]
+fn hash_image_data_n_falls_back_to_raw_bytes_for_undecodable_files() {
+    use std::fs;
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("garbage.cr2");
+    let mut f = fs::File::create(&path).unwrap();
+    f.write_all(&[0xFF, 0x44, 0x00, 0x17, 0xAB, 0xCD, 0xEF, 0x01]).unwrap();
+    drop(f);
+
+    let hash = dedupe2::image_reader::hash_image_data_n(&path, 64 * 1024);
+    let bytes = fs::read(&path).unwrap();
+    assert_eq!(hash, seahash::hash(&bytes));
+}

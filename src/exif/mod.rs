@@ -29,6 +29,13 @@ impl fmt::Display for CreationDate {
 }
 
 pub fn creation_date(path: &Path) -> CreationDate {
+    // Decoders can panic on malformed files; unwind per file and treat it as
+    // unknown rather than poisoning the whole scan.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| creation_date_inner(path)))
+        .unwrap_or(CreationDate::Unknown)
+}
+
+fn creation_date_inner(path: &Path) -> CreationDate {
     let from_exif = match read_metadata(path) {
         Ok(metadata) => match metadata {
             Metadata::Exif(exif) => resolve(

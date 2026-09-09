@@ -6,7 +6,7 @@ use walkdir::WalkDir;
 
 use crate::Scanner::fastScan::hash_image_data_parallel;
 use crate::Scanner::scanner::ScannedFile;
-use crate::exif::CreationDate;
+use crate::exif::{creation_date, CreationDate};
 use crate::image_reader::{hash_all_bytes, hash_image_data, is_supported_image, ReadLimit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,8 +173,8 @@ fn plan_merge(
     let hashes = hash_image_data_parallel(&paths, 64 * 1024, progress);
 
     let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
-    for (i, hash) in hashes.into_iter().enumerate() {
-        buckets.entry(hash).or_default().push(i);
+    for (i, fh) in hashes.into_iter().enumerate() {
+        buckets.entry(fh.hash).or_default().push(i);
     }
 
     let mut groups: Vec<Vec<usize>> = Vec::new();
@@ -719,8 +719,8 @@ fn consolidate_plan(
         let hashes = hash_image_data_parallel(&abs, 64 * 1024, progress);
 
         let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
-        for (i, h) in hashes.into_iter().enumerate() {
-            buckets.entry(h).or_default().push(i);
+        for (i, fh) in hashes.into_iter().enumerate() {
+            buckets.entry(fh.hash).or_default().push(i);
         }
 
         let mut purged: HashSet<usize> = HashSet::new();
@@ -841,4 +841,140 @@ fn try_remove_empty(dir: &Path) {
         }
     }
     let _ = std::fs::remove_dir(dir);
+}
+
+#[derive(Debug)]
+pub struct CopyOutcome {
+    pub copied: usize,
+    pub skipped_no_exif: usize,
+    pub targets: Vec<PathBuf>,
+}
+
+/// Transfer candidate originals that carry valid EXIF data into
+/// `destination`, laid out per `format`. Tokens: `YYYY`, `MM`, `DD` come from
+/// the EXIF date; `<folder description>` (or `DESC`) comes from the source
+/// folder name. `Operation::Copy` leaves the source in place; `Move` removes it.
+pub fn copy_originals(
+    originals: &[PathBuf],
+    destination: &Path,
+    format: &str,
+) -> Result<CopyOutcome, FileMoverError> {
+    copy_originals_with_progress(originals, destination, format, &|_, _| {})
+}
+
+pub fn copy_originals_with_progress(
+    originals: &[PathBuf],
+    destination: &Path,
+    format: &str,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<CopyOutcome, FileMoverError> {
+    transfer_originals_with_progress(originals, destination, format, Operation::Copy, progress)
+}
+
+pub fn transfer_originals_with_progress(
+    originals: &[PathBuf],
+    destination: &Path,
+    format: &str,
+    op: Operation,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<CopyOutcome, FileMoverError> {
+    let mut outcome = CopyOutcome {
+        copied: 0,
+        skipped_no_exif: 0,
+        targets: Vec::new(),
+    };
+    let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+    let total = originals.len();
+
+    for (i, path) in originals.iter().enumerate() {
+        match destination_for(path, &creation_date(path), destination, format) {
+            Some(target) => {
+                let dir = match target.parent() {
+                    Some(p) => p.to_path_buf(),
+                    None => destination.to_path_buf(),
+                };
+                let filename = file_name(path);
+                let names = taken.entry(dir).or_default();
+                let unique = unique_name(&filename, names);
+                names.insert(unique.clone());
+                let target = target
+                    .parent()
+                    .unwrap_or_else(|| destination)
+                    .join(unique);
+                relocate_file(path, &target, op)?;
+                outcome.copied += 1;
+                outcome.targets.push(target);
+            }
+            None => outcome.skipped_no_exif += 1,
+        }
+        progress(i + 1, total);
+    }
+
+    Ok(outcome)
+}
+
+/// The descriptive part of the folder a file originated from, e.g.
+/// `03-15 hawaii` -> `hawaii`; a folder without an `mm-dd` prefix uses its
+/// whole name.
+fn folder_description(path: &Path) -> String {
+    let name = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if is_event_name(name) {
+        name[5..].trim().to_string()
+    } else {
+        name.trim().to_string()
+    }
+}
+
+/// The full target path an original would be copied to, or `None` when the
+/// date isn't a valid calendar date. Pure computation: no file I/O.
+pub fn destination_for(
+    path: &Path,
+    date: &CreationDate,
+    destination: &Path,
+    format: &str,
+) -> Option<PathBuf> {
+    let (year, month, day) = parse_date(date)?;
+    let description = folder_description(path);
+    let rendered = render_date_folder(format, year, month, day, &description);
+    Some(destination.join(rendered).join(file_name(path)))
+}
+
+pub fn render_date_folder(
+    format: &str,
+    year: u32,
+    month: u32,
+    day: u32,
+    description: &str,
+) -> String {
+    let mut out = format.to_string();
+    if description.is_empty() {
+        out = out
+            .replace("<folder description>", "")
+            .replace("<desc>", "")
+            .replace("DESC", "");
+        out = out
+            .split('/')
+            .map(|seg| {
+                seg.trim()
+                    .trim_matches(['-', '_', ' '])
+                    .trim()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+    } else {
+        out = out
+            .replace("<folder description>", description)
+            .replace("<desc>", description)
+            .replace("DESC", description);
+    }
+    out = out
+        .replace("YYYY", &format!("{year:04}"))
+        .replace("MM", &format!("{month:02}"))
+        .replace("DD", &format!("{day:02}"));
+    out
 }

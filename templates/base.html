@@ -4,13 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{ title }}</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=2" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">{{ title }}</div>
     <nav class="tabs" role="tablist" aria-label="Primary">
-      <a class="tab tab-link active" href="/consolidate">Consolidate</a>
+      <a class="tab tab-link{% if page == "consolidate" %} active{% endif %}" href="/consolidate">Consolidate</a>
+      <a class="tab tab-link{% if page == "compare" %} active{% endif %}" href="/compare">Compare Folders</a>
     </nav>
   </header>
   <main class="content">

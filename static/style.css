@@ -658,3 +658,73 @@ body {
   border-radius: 999px;
   transition: width 0.2s ease;
 }
+
+/* — Compare result collections (scrollable tables) — */
+.collection {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: 1rem 0;
+  overflow: hidden;
+}
+
+.collection-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.collection-title {
+  font-weight: 700;
+  color: var(--text);
+}
+
+.collection-sub {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-left: auto;
+}
+
+.table-scroll {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.compare-table th,
+.compare-table td {
+  text-align: left;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.compare-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 1;
+}
+
+.compare-table tbody tr:hover {
+  background: var(--bg);
+}
+
+.compare-table td.muted {
+  color: var(--muted);
+}
+
+.compare-table tr.row-b td.path {
+  color: var(--dirty);
+}
+
+.compare-table tr.more-row td {
+  color: var(--muted);
+  font-style: italic;
+}
