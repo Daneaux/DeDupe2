@@ -1,3 +1,5 @@
+mod ciff;
+
 use std::fmt;
 use std::path::Path;
 use std::time::SystemTime;
@@ -54,6 +56,12 @@ fn creation_date_inner(path: &Path) -> CreationDate {
         return from_exif;
     }
 
+    // Canon CRW (CIFF): nom-exif can't read it and rawler's CRW decoder does
+    // not parse metadata yet, so the shot date comes from the CIFF tree.
+    if let Some(date) = ciff::creation_date(path) {
+        return date;
+    }
+
     raw_creation_date(path)
 }
 
@@ -85,32 +93,9 @@ fn format_system_time(t: SystemTime) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
-fn resolve(dt_original: Option<String>, create_date: Option<String>) -> CreationDate {
+pub fn resolve(dt_original: Option<String>, create_date: Option<String>) -> CreationDate {
     dt_original
         .or(create_date)
         .map(CreationDate::DateCreated)
         .unwrap_or(CreationDate::Unknown)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prioritizes_datetime_original() {
-        let result = resolve(Some("2023-01-01".into()), Some("2022-01-01".into()));
-        assert_eq!(result, CreationDate::DateCreated("2023-01-01".into()));
-    }
-
-    #[test]
-    fn falls_back_to_create_date() {
-        let result = resolve(None, Some("2022-01-01".into()));
-        assert_eq!(result, CreationDate::DateCreated("2022-01-01".into()));
-    }
-
-    #[test]
-    fn unknown_when_both_missing() {
-        let result = resolve(None, None);
-        assert_eq!(result, CreationDate::Unknown);
-    }
 }
