@@ -3,6 +3,7 @@ mod hash;
 mod heic;
 mod isobmff;
 mod jpg;
+mod movie;
 mod raw;
 mod types;
 
@@ -19,6 +20,7 @@ pub use types::{ImageData, ImageReaderError, PixelData, ReadLimit};
 enum FileType {
     Jpg,
     Heic,
+    Movie,
     Raw,
 }
 
@@ -26,6 +28,7 @@ pub fn read_image(path: &Path) -> Result<ImageData, ImageReaderError> {
     match detect_file_type(path)? {
         FileType::Jpg => jpg::decode(path),
         FileType::Heic => heic::decode(path),
+        FileType::Movie => movie::decode(path),
         FileType::Raw => raw::decode(path),
     }
 }
@@ -34,6 +37,7 @@ pub fn read_image_data(path: &Path, limit: ReadLimit) -> Result<Vec<u8>, ImageRe
     match detect_file_type(path)? {
         FileType::Jpg => jpg::image_data(path, limit),
         FileType::Heic => heic::image_data(path, limit),
+        FileType::Movie => movie::image_data(path, limit),
         FileType::Raw => raw::image_data(path, limit),
     }
 }
@@ -42,6 +46,7 @@ fn detect_file_type(path: &Path) -> Result<FileType, ImageReaderError> {
     match extension_of(path) {
         Some(ext) => match ext.as_str() {
             "heic" | "heif" => Ok(FileType::Heic),
+            e if VIDEO_EXTENSIONS.contains(&e) => Ok(FileType::Movie),
             e if RAW_EXTENSIONS.contains(&e) => Ok(FileType::Raw),
             e if IMAGE_EXTENSIONS.contains(&e) => Ok(FileType::Jpg),
             _ => Err(ImageReaderError::new(format!("unsupported file type: .{ext}"))),
@@ -59,6 +64,7 @@ pub fn is_supported_image(path: &Path) -> bool {
                 || ext == "heif"
                 || RAW_EXTENSIONS.contains(&ext.as_str())
                 || IMAGE_EXTENSIONS.contains(&ext.as_str())
+                || VIDEO_EXTENSIONS.contains(&ext.as_str())
         }
         None => false,
     }
@@ -80,3 +86,5 @@ const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "webp", "gif", "bmp", "ico", "pnm", "pbm",
     "pgm", "ppm", "pam", "qoi", "avif", "hdr", "exr", "ff",
 ];
+
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "m4v"];

@@ -139,3 +139,41 @@ fn undecodable_files_are_listed_as_unreadable() {
     assert!(cmp.duplicates.is_empty());
     assert_eq!(names(&cmp.a_only), vec!["ok.jpg".to_string()]);
 }
+
+#[test]
+fn transfer_never_overwrites_preexisting_destination_files() {
+    use dedupe2::filemover::transfer_originals_with_progress;
+    use dedupe2::filemover::Operation;
+
+    let root = tempfile::tempdir().unwrap();
+    let candidate = root.path().join("candidate/03-15 hawaii");
+    let destination = root.path().join("library/2022/08-17 hawaii");
+
+    std::fs::create_dir_all(&candidate).unwrap();
+    std::fs::create_dir_all(&destination).unwrap();
+
+    let img = sample("jpg-exif-mod/image1.JPG");
+    // Pre-existing destination file with the SAME name the transfer will use.
+    std::fs::write(destination.join("new1.jpg"), b"PRE-EXISTING-DO-NOT-LOSE").unwrap();
+    std::fs::write(candidate.join("new1.jpg"), &img).unwrap();
+
+    let originals = vec![candidate.join("new1.jpg")];
+    let outcome = transfer_originals_with_progress(
+        &originals,
+        &root.path().join("library"),
+        "YYYY/MM-DD <folder description>",
+        Operation::Move,
+        &|_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(outcome.copied, 1);
+
+    // The pre-existing file is intact, the transferred one was auto-renamed.
+    assert_eq!(
+        std::fs::read(destination.join("new1.jpg")).unwrap(),
+        b"PRE-EXISTING-DO-NOT-LOSE"
+    );
+    assert!(destination.join("new1 (1).jpg").exists());
+    assert!(!candidate.join("new1.jpg").exists()); // moved
+}

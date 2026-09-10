@@ -190,8 +190,8 @@ fn plan_merge(
 
     let canonical = canonical_folders(&all);
 
-    let mut dest_taken: HashSet<String> = HashSet::new();
-    let mut purg_taken: HashSet<String> = HashSet::new();
+    let mut dest_taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+    let mut purg_taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
 
     let mut duplicate_groups = Vec::new();
     let mut uniques = Vec::new();
@@ -329,25 +329,41 @@ fn dest_target(
     file: &SourceFile,
     canonical: &HashMap<(String, String), String>,
     destination: &Path,
-    taken: &mut HashSet<String>,
+    taken: &mut HashMap<PathBuf, HashSet<String>>,
 ) -> Result<PathBuf, FileMoverError> {
-    let filename = file_name(&file.rel);
-    let unique = unique_name(&filename, taken);
-    taken.insert(unique.clone());
-
     let folder = destination_folder(&file.rel, canonical).ok_or_else(|| {
         FileMoverError::Other(format!("no year/event structure for {}", file.path.display()))
     })?;
-    Ok(destination.join(folder).join(unique))
+    let dir = destination.join(folder);
+    let unique = unique_in_dir(&dir, &file_name(&file.rel), taken);
+    Ok(dir.join(unique))
 }
 
-fn purg_target(file: &SourceFile, purgatory: &Path, taken: &mut HashSet<String>) -> PathBuf {
-    let filename = file_name(&file.rel);
-    let unique = unique_name(&filename, taken);
-    taken.insert(unique.clone());
-
+fn purg_target(
+    file: &SourceFile,
+    purgatory: &Path,
+    taken: &mut HashMap<PathBuf, HashSet<String>>,
+) -> PathBuf {
     let parent = file.rel.parent().unwrap_or_else(|| Path::new(""));
-    purgatory.join(parent).join(unique)
+    let dir = purgatory.join(parent);
+    let unique = unique_in_dir(&dir, &file_name(&file.rel), taken);
+    dir.join(unique)
+}
+
+/// A filename that does not collide with anything already used in this run or
+/// already present in `dir` on disk.
+fn unique_in_dir(
+    dir: &Path,
+    filename: &str,
+    taken: &mut HashMap<PathBuf, HashSet<String>>,
+) -> String {
+    let seed_dir = dir.to_path_buf();
+    let names = taken
+        .entry(dir.to_path_buf())
+        .or_insert_with(|| existing_names(&seed_dir));
+    let unique = unique_name(filename, names);
+    names.insert(unique.clone());
+    unique
 }
 
 pub fn relocate_tree(src: &Path, dst: &Path, op: Operation) -> Result<(), FileMoverError> {
@@ -572,6 +588,21 @@ fn is_date_token(word: &str) -> bool {
     MONTHS.contains(&word.to_lowercase().as_str())
 }
 
+/// Filenames currently present in `dir` (empty when the directory does not
+/// exist yet). Used to seed collision tracking so transfers never overwrite
+/// files that already exist at the destination.
+fn existing_names(dir: &Path) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                out.insert(name.to_string());
+            }
+        }
+    }
+    out
+}
+
 fn unique_name(filename: &str, taken: &HashSet<String>) -> String {
     if !taken.contains(filename) {
         return filename.to_string();
@@ -733,7 +764,7 @@ fn consolidate_plan(
             purged.extend(bucket.iter().skip(1).copied());
         }
 
-        let mut keep_taken: HashSet<String> = HashSet::new();
+        let mut keep_taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
         let mut purge_taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
 
         let mut moved = Vec::new();
@@ -748,16 +779,13 @@ fn consolidate_plan(
 
             if purged.contains(&i) {
                 let dest_dir = purgatory.join(&group[*origin].name);
-                let taken = purge_taken.entry(dest_dir.clone()).or_default();
-                let unique = unique_name(&filename, taken);
-                taken.insert(unique.clone());
+                let unique = unique_in_dir(&dest_dir, &filename, &mut purge_taken);
                 purged_plans.push(MovePlan {
                     source: path.clone(),
                     target: dest_dir.join(&unique),
                 });
             } else if *origin != 0 {
-                let unique = unique_name(&filename, &keep_taken);
-                keep_taken.insert(unique.clone());
+                let unique = unique_in_dir(&keeper.path, &filename, &mut keep_taken);
                 moved.push(MovePlan {
                     source: path.clone(),
                     target: keeper.path.join(&unique),
@@ -894,7 +922,10 @@ pub fn transfer_originals_with_progress(
                     None => destination.to_path_buf(),
                 };
                 let filename = file_name(path);
-                let names = taken.entry(dir).or_default();
+                let seed_dir = dir.clone();
+                let names = taken
+                    .entry(dir)
+                    .or_insert_with(|| existing_names(&seed_dir));
                 let unique = unique_name(&filename, names);
                 names.insert(unique.clone());
                 let target = target

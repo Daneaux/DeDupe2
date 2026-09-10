@@ -62,7 +62,20 @@ fn creation_date_inner(path: &Path) -> CreationDate {
         return date;
     }
 
+    // MP4/MOV are nom-exif's domain; rawler's bmff decoder is for CR3 and
+    // gains nothing here, so don't fall back into it for movie files.
+    if is_movie_ext(path) {
+        return CreationDate::Unknown;
+    }
+
     raw_creation_date(path)
+}
+
+fn is_movie_ext(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some(ext) if matches!(ext.to_ascii_lowercase().as_str(), "mp4" | "mov" | "m4v")
+    )
 }
 
 fn raw_creation_date(path: &Path) -> CreationDate {
