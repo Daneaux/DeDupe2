@@ -319,3 +319,120 @@ fn full_date_source_folder_is_treated_as_date_not_description() {
         target2.display()
     );
 }
+
+#[test]
+fn verify_tree_flags_wrong_folder_placements() {
+    use dedupe2::Scanner::compare::verify_tree_dates;
+
+    let root = tempfile::tempdir().unwrap();
+    let lib = root.path().join("library");
+    let img = sample("jpg-exif-mod/image1.JPG"); // EXIF 2022-08-17
+    let fake = b"\xFF\xD8 truncated, no exif";   // undetectable date
+
+    // OK: folder date matches EXIF date.
+    std::fs::create_dir_all(lib.join("2022/08-17 hawaii")).unwrap();
+    std::fs::write(lib.join("2022/08-17 hawaii/ok.jpg"), &img).unwrap();
+
+    // MISMATCH: file sits in 2010/05-30 but was taken 2022-08-17.
+    std::fs::create_dir_all(lib.join("2010/05-30")).unwrap();
+    std::fs::write(lib.join("2010/05-30/wrong.jpg"), &img).unwrap();
+
+    // OUTSIDE: has EXIF but folder does not encode a date.
+    std::fs::create_dir_all(lib.join("misc")).unwrap();
+    std::fs::write(lib.join("misc/in_misc.jpg"), &img).unwrap();
+
+    // UNDATED: no exif, folder does not encode a date.
+    std::fs::write(lib.join("misc/noexif.jpg"), &fake).unwrap();
+
+    let outcome = verify_tree_dates(&lib).unwrap();
+
+    assert_eq!(outcome.total, 4);
+    assert_eq!(outcome.ok, 1);
+    assert_eq!(outcome.outside_structure, 1);
+    assert_eq!(outcome.undated, 1);
+    assert_eq!(outcome.mismatches.len(), 1);
+    assert!(outcome.mismatches[0]
+        .path
+        .display()
+        .to_string()
+        .ends_with("2010/05-30/wrong.jpg"));
+    assert_eq!(outcome.mismatches[0].exif_date, "2022-08-17");
+    assert_eq!(outcome.mismatches[0].folder_date, "2010-05-30");
+}
+
+#[test]
+fn rehome_is_safe_copy_verify_then_remove() {
+    use dedupe2::filemover::{plan_rehome, rehome_verified};
+
+    let root = tempfile::tempdir().unwrap();
+    let lib = root.path().join("library");
+    let img = sample("jpg-exif-mod/image1.JPG"); // EXIF 2022-08-17
+
+    // Mismatch: file sits in 2010/05-30, belongs at 2022/08-17.
+    std::fs::create_dir_all(lib.join("2010/05-30")).unwrap();
+    std::fs::write(lib.join("2010/05-30/wrong.jpg"), &img).unwrap();
+
+    // Pre-existing destination file with the same name — must NOT be lost.
+    std::fs::create_dir_all(lib.join("2022/08-17")).unwrap();
+    std::fs::write(lib.join("2022/08-17/wrong.jpg"), b"PRE-EXISTING-KEEP-ME").unwrap();
+
+    let mismatches = vec![(
+        lib.join("2010/05-30/wrong.jpg"),
+        "2022-08-17".to_string(),
+    )];
+    let plans = plan_rehome(&mismatches, &lib, "YYYY/MM-DD <folder description>");
+    assert_eq!(plans.len(), 1);
+    assert!(plans[0]
+        .target
+        .display()
+        .to_string()
+        .ends_with("2022/08-17/wrong.jpg"));
+
+    let outcome = rehome_verified(&plans, &|_, _| {});
+    assert_eq!(outcome.moved, 1);
+    assert_eq!(outcome.renamed_on_collision, 1);
+    assert_eq!(outcome.failures.len(), 0);
+
+    // The moved file is byte-identical at its new home.
+    assert_eq!(fs::read(lib.join("2022/08-17/wrong (1).jpg")).unwrap(), img);
+    // The pre-existing destination file is untouched.
+    assert_eq!(
+        fs::read(lib.join("2022/08-17/wrong.jpg")).unwrap(),
+        b"PRE-EXISTING-KEEP-ME"
+    );
+    // The source is gone (only after verification).
+    assert!(!lib.join("2010/05-30/wrong.jpg").exists());
+}
+
+#[test]
+fn rehome_never_overwrites_case_insensitive_name_collision() {
+    use dedupe2::filemover::{plan_rehome, rehome_verified};
+
+    let root = tempfile::tempdir().unwrap();
+    let lib = root.path().join("library");
+
+    // The destination folder already contains IMG_0500.JPG (uppercase ext),
+    // holding content A. The incoming file is IMG_0500.jpg (lowercase ext),
+    // content B — on a case-insensitive filesystem these are the SAME file.
+    std::fs::create_dir_all(lib.join("2012/09-27")).unwrap();
+    std::fs::create_dir_all(lib.join("2012/11-06")).unwrap();
+    std::fs::write(lib.join("2012/09-27/IMG_0500.JPG"), b"CONTENT-A-HIGH-RES").unwrap();
+    let incoming = lib.join("2012/11-06/IMG_0500.jpg");
+    std::fs::write(&incoming, b"content-b-low-res").unwrap();
+
+    let mismatches = vec![(incoming.clone(), "2012-09-27".to_string())];
+    let plans = plan_rehome(&mismatches, &lib, "YYYY/MM-DD <folder description>");
+    let outcome = rehome_verified(&plans, &|_, _| {});
+
+    assert_eq!(outcome.moved, 1);
+
+    // Content A must be intact at its original (case-variant) name.
+    assert_eq!(
+        fs::read(lib.join("2012/09-27/IMG_0500.JPG")).unwrap(),
+        b"CONTENT-A-HIGH-RES"
+    );
+    // Content B must be present under an auto-renamed name.
+    let landed = lib.join("2012/09-27/IMG_0500 (1).jpg");
+    assert!(landed.exists(), "incoming file must be renamed, not overwrite");
+    assert_eq!(fs::read(landed).unwrap(), b"content-b-low-res");
+}

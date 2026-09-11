@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use crate::Scanner::fastScan::hash_image_data_parallel;
-use crate::exif::{creation_date, CreationDate};
+use crate::exif::{creation_date_with_timeout, CreationDate};
 use crate::image_reader::is_supported_image;
 
 #[derive(Debug)]
@@ -130,7 +130,7 @@ pub fn scan_exif_with_progress(
     paths
         .par_iter()
         .map(|path| {
-            let creation_date = creation_date(path);
+            let creation_date = creation_date_with_timeout(path, crate::exif::EXIF_TIMEOUT);
             progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
             DatedOriginal {
                 path: path.clone(),
@@ -395,4 +395,182 @@ fn images_equal(
         (PixelData::U16(x), PixelData::U16(y)) => x == y,
         _ => false,
     }
+}
+
+/// The date a library folder layout implies for a file: `YYYY/MM-DD <desc>`
+/// (event folder under a year folder) or a `YYYY-MM-DD` folder directly.
+fn folder_implied_date(path: &Path) -> Option<(u32, u32, u32)> {
+    use crate::exif::{parse_md_folder, parse_ymd_folder};
+
+    let parent = path.parent()?.file_name()?.to_str()?.to_string();
+    if let Some((y, m, d)) = parse_ymd_folder(&parent) {
+        return Some((y, m, d));
+    }
+    let (m, d) = parse_md_folder(&parent)?;
+    let grand = path.parent()?.parent()?.file_name()?.to_str()?.to_string();
+    let y = grand.parse::<u32>().ok()?;
+    Some((y, m, d))
+}
+
+/// Pull (year, month, day) out of any creation-date rendering.
+fn ymd_from_string(s: &str) -> Option<(u32, u32, u32)> {
+    let groups: Vec<u32> = s
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|g| !g.is_empty())
+        .filter_map(|g| g.parse().ok())
+        .collect();
+    if groups.len() >= 3 {
+        Some((groups[0], groups[1], groups[2]))
+    } else {
+        None
+    }
+}
+
+#[derive(Debug)]
+pub struct VerifyMismatch {
+    pub path: PathBuf,
+    /// The file's EXIF capture date (the truth).
+    pub exif_date: String,
+    /// The date the folder layout implies (where it currently sits).
+    pub folder_date: String,
+    /// Absolute difference in days between the two dates.
+    pub days_off: i64,
+}
+
+/// Status of one file in the verification pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyStatus {
+    Ok,
+    Mismatch,
+    OutsideStructure,
+    Undated,
+}
+
+impl VerifyStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            VerifyStatus::Ok => "ok",
+            VerifyStatus::Mismatch => "mismatch",
+            VerifyStatus::OutsideStructure => "outside",
+            VerifyStatus::Undated => "undated",
+        }
+    }
+}
+
+/// Every verified file, with its dates and classification.
+#[derive(Debug)]
+pub struct VerifiedFile {
+    pub path: PathBuf,
+    /// EXIF capture date, when known.
+    pub exif_date: Option<String>,
+    /// Folder-implied date, when the folder encodes one.
+    pub folder_date: Option<String>,
+    pub status: VerifyStatus,
+    /// For mismatches: |exif - folder| in days.
+    pub days_off: Option<i64>,
+}
+
+#[derive(Debug)]
+pub struct VerifyOutcome {
+    /// All supported media files found in the tree.
+    pub total: usize,
+    /// EXIF date agrees with the folder date.
+    pub ok: usize,
+    /// EXIF date disagrees with the folder date (wrong folder).
+    pub mismatches: Vec<VerifyMismatch>,
+    /// Has an EXIF date, but the folder does not encode one to verify against.
+    pub outside_structure: usize,
+    /// No EXIF date and no folder date.
+    pub undated: usize,
+    /// Every file with its classification, in folder order.
+    pub files: Vec<VerifiedFile>,
+}
+
+pub fn verify_tree_dates(root: &Path) -> Result<VerifyOutcome, Box<dyn std::error::Error>> {
+    verify_tree_dates_with_progress(root, &|_, _| {})
+}
+
+/// Verify that every file in the destination tree sits in the folder its EXIF
+/// capture date implies. Catches files moved by stale/wrong dates.
+pub fn verify_tree_dates_with_progress(
+    root: &Path,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<VerifyOutcome, Box<dyn std::error::Error>> {
+    use crate::exif::creation_date_with_timeout;
+
+    let files = collect_image_files(root)?;
+    let total = files.len();
+    let done = AtomicUsize::new(0);
+
+    // Parallel: the per-file date is the expensive part (raw metadata can
+    // involve whole-file reads). Each file is time-limited so a stalled
+    // decoder can never freeze the pass; stalled files fall back to the
+    // folder proxy date inside `creation_date_with_timeout`.
+    let classifications: Vec<(Option<(u32, u32, u32)>, Option<(u32, u32, u32)>)> = files
+        .par_iter()
+        .map(|path| {
+            let exif_ymd = ymd_from_string(
+                &creation_date_with_timeout(path, crate::exif::EXIF_TIMEOUT).to_string(),
+            );
+            let folder_ymd = folder_implied_date(path);
+            progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
+            (exif_ymd, folder_ymd)
+        })
+        .collect();
+
+    let mut outcome = VerifyOutcome {
+        total,
+        ok: 0,
+        mismatches: Vec::new(),
+        outside_structure: 0,
+        undated: 0,
+        files: Vec::with_capacity(files.len()),
+    };
+
+    let as_date = |(y, m, d): (u32, u32, u32)| chrono::NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32);
+    let days_between = |a: (u32, u32, u32), b: (u32, u32, u32)| -> i64 {
+        match (as_date(a), as_date(b)) {
+            (Some(da), Some(db)) => da.signed_duration_since(db).num_days().abs(),
+            _ => 0,
+        }
+    };
+
+    for (path, (exif_ymd, folder_ymd)) in files.iter().zip(classifications) {
+        let (status, days_off) = match (exif_ymd, folder_ymd) {
+            (Some(e), Some(f)) => {
+                if e == f {
+                    outcome.ok += 1;
+                    (VerifyStatus::Ok, Some(0))
+                } else {
+                    outcome.mismatches.push(VerifyMismatch {
+                        path: path.clone(),
+                        exif_date: format!("{:04}-{:02}-{:02}", e.0, e.1, e.2),
+                        folder_date: format!("{:04}-{:02}-{:02}", f.0, f.1, f.2),
+                        days_off: days_between(e, f),
+                    });
+                    (VerifyStatus::Mismatch, Some(days_between(e, f)))
+                }
+            }
+            (Some(_), None) => {
+                outcome.outside_structure += 1;
+                (VerifyStatus::OutsideStructure, None)
+            }
+            (None, _) => {
+                outcome.undated += 1;
+                (VerifyStatus::Undated, None)
+            }
+        };
+
+        outcome.files.push(VerifiedFile {
+            path: path.clone(),
+            exif_date: exif_ymd.map(|(y, m, d)| format!("{y:04}-{m:02}-{d:02}")),
+            folder_date: folder_ymd.map(|(y, m, d)| format!("{y:04}-{m:02}-{d:02}")),
+            status,
+            days_off,
+        });
+    }
+
+    outcome.mismatches.sort_by(|a, b| a.path.cmp(&b.path));
+
+    Ok(outcome)
 }

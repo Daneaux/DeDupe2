@@ -102,3 +102,56 @@ fn reads_mov_creation_date() {
         "expected 2013-06-30, got {date:?}"
     );
 }
+
+#[test]
+fn reads_rw2_datetime_original() {
+    let path = test_image("P1000673.RW2");
+    if !path.exists() {
+        return; // sample image not present in this checkout
+    }
+
+    // Panasonic RW2 carries only DateTimeOriginal/CreateDate (no ModifyDate),
+    // so this exercises the capture-date priority over last_modified().
+    let date = creation_date(&path);
+    assert!(
+        matches!(date, CreationDate::DateCreated(ref s) if s.starts_with("2010-05-30")),
+        "expected 2010-05-30, got {date:?}"
+    );
+}
+
+#[test]
+fn rawler_capture_date_prefers_datetime_original_over_recent_modify_date() {
+    use dedupe2::exif::select_capture_date;
+
+    // The feared case: the file was edited yesterday (recent ModifyDate) but
+    // was taken in 2010. ModifyDate must lose.
+    let mut exif = rawler::exif::Exif::default();
+    exif.date_time_original = Some("2010:05:30 06:59:32".into());
+    exif.create_date = Some("2010:05:30 06:59:32".into());
+    exif.modify_date = Some("2026:09:10 19:00:00".into());
+
+    let date = select_capture_date(&exif);
+    assert!(
+        matches!(date, Some(CreationDate::DateCreated(ref s)) if s.starts_with("2010-05-30")),
+        "expected 2010-05-30, got {date:?}"
+    );
+
+    // Fallback chain: only ModifyDate present -> it is used.
+    let mut exif = rawler::exif::Exif::default();
+    exif.modify_date = Some("2026:09:10 19:00:00".into());
+    let date = select_capture_date(&exif);
+    assert!(
+        matches!(date, Some(CreationDate::DateCreated(ref s)) if s.starts_with("2026-09-10")),
+        "expected 2026-09-10, got {date:?}"
+    );
+
+    // Priority between the two capture dates: DateTimeOriginal wins.
+    let mut exif = rawler::exif::Exif::default();
+    exif.date_time_original = Some("2010:05:30 06:59:32".into());
+    exif.create_date = Some("2011:01:01 00:00:00".into());
+    let date = select_capture_date(&exif);
+    assert!(
+        matches!(date, Some(CreationDate::DateCreated(ref s)) if s.starts_with("2010-05-30")),
+        "expected 2010-05-30, got {date:?}"
+    );
+}

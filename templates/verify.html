@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel" role="tabpanel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Verify Library</h2>
+      <span class="subtitle">Check every file sits in the folder its EXIF date implies</span>
+    </div>
+  </div>
+
+  <form method="post" action="/verify/run" id="verify-form">
+    <label class="field">
+      <span>Destination tree</span>
+      <input type="text" name="root" placeholder="/Volumes/4tbExt/AllPhotos" />
+    </label>
+
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary">Verify</button>
+    </div>
+  </form>
+</section>
+
+<div id="verify-progress" class="merge-progress" hidden>
+  <div class="merge-progress-label" id="verify-progress-text">Working…</div>
+  <div class="merge-progress-track"><div class="merge-progress-fill" id="verify-progress-fill"></div></div>
+</div>
+
+<div id="verify-result"></div>
+
+<script src="/static/compare.js?v=14"></script>
+{% endblock %}

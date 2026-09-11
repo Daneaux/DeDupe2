@@ -362,7 +362,7 @@ fn unique_in_dir(
         .entry(dir.to_path_buf())
         .or_insert_with(|| existing_names(&seed_dir));
     let unique = unique_name(filename, names);
-    names.insert(unique.clone());
+    names.insert(unique.to_lowercase());
     unique
 }
 
@@ -389,7 +389,7 @@ pub fn organize_by_date(
     op: Operation,
 ) -> Result<(), FileMoverError> {
     let event = extract_event(source_name);
-    let mut taken: HashSet<String> = HashSet::new();
+    let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
 
     for file in files {
         let folder = match parse_date(&file.creation_date) {
@@ -409,9 +409,7 @@ pub fn organize_by_date(
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("file");
-        let unique = unique_name(filename, &taken);
-        taken.insert(unique.clone());
-
+        let unique = unique_in_dir(&folder, filename, &mut taken);
         let target = folder.join(unique);
         relocate_file(&file.path, &target, op)?;
     }
@@ -458,14 +456,13 @@ pub fn merge_dirs(
         }
     }
 
-    let mut taken: HashSet<String> = HashSet::new();
+    let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
     for path in &files {
         if discarded.contains(path) {
             continue;
         }
         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-        let unique = unique_name(filename, &taken);
-        taken.insert(unique.clone());
+        let unique = unique_in_dir(dst, filename, &mut taken);
 
         let target = dst.join(unique);
         relocate_file(path, &target, op)?;
@@ -591,12 +588,15 @@ fn is_date_token(word: &str) -> bool {
 /// Filenames currently present in `dir` (empty when the directory does not
 /// exist yet). Used to seed collision tracking so transfers never overwrite
 /// files that already exist at the destination.
+/// Filenames currently present in `dir`, **lowercased** — on case-insensitive
+/// filesystems (macOS/Windows) `IMG_0500.jpg` and `IMG_0500.JPG` are the same
+/// file, so collisions must be detected without regard to case.
 fn existing_names(dir: &Path) -> HashSet<String> {
     let mut out = HashSet::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             if let Some(name) = entry.file_name().to_str() {
-                out.insert(name.to_string());
+                out.insert(name.to_lowercase());
             }
         }
     }
@@ -604,7 +604,8 @@ fn existing_names(dir: &Path) -> HashSet<String> {
 }
 
 fn unique_name(filename: &str, taken: &HashSet<String>) -> String {
-    if !taken.contains(filename) {
+    let probe = filename.to_lowercase();
+    if !taken.contains(&probe) {
         return filename.to_string();
     }
 
@@ -616,7 +617,7 @@ fn unique_name(filename: &str, taken: &HashSet<String>) -> String {
     let mut n = 1;
     loop {
         let candidate = format!("{stem} ({n}){ext}");
-        if !taken.contains(&candidate) {
+        if !taken.contains(&candidate.to_lowercase()) {
             return candidate;
         }
         n += 1;
@@ -927,7 +928,7 @@ pub fn transfer_originals_with_progress(
                     .entry(dir)
                     .or_insert_with(|| existing_names(&seed_dir));
                 let unique = unique_name(&filename, names);
-                names.insert(unique.clone());
+                names.insert(unique.to_lowercase());
                 let target = target
                     .parent()
                     .unwrap_or_else(|| destination)
@@ -1047,4 +1048,153 @@ pub fn render_date_folder(
         .replace("MM", &format!("{month:02}"))
         .replace("DD", &format!("{day:02}"));
     out
+}
+
+/// A verified re-home plan for one mismatched file: move it from where it
+/// sits to the folder its EXIF date implies.
+#[derive(Debug)]
+pub struct RehomePlan {
+    pub path: PathBuf,
+    pub target: PathBuf,
+    pub exif_date: String,
+}
+
+/// Compute re-home plans from verify mismatches. The target folder is derived
+/// from the file's true EXIF date, keeping the description of the folder it
+/// currently lives in.
+pub fn plan_rehome(
+    mismatches: &[(PathBuf, String)],
+    root: &Path,
+    format: &str,
+) -> Vec<RehomePlan> {
+    mismatches
+        .iter()
+        .filter_map(|(path, date_str)| {
+            let date = CreationDate::DateCreated(date_str.clone());
+            destination_for(path, &date, root, format).map(|target| RehomePlan {
+                path: path.clone(),
+                target,
+                exif_date: date_str.clone(),
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+pub struct RehomeOutcome {
+    pub planned: usize,
+    pub moved: usize,
+    pub renamed_on_collision: usize,
+    /// Files that could not be transferred safely, with the reason. The
+    /// source is always left intact for these.
+    pub failures: Vec<(PathBuf, String)>,
+}
+
+/// Super-safe re-home: for every plan, **copy** the file to its target,
+/// verify the destination is byte-identical to the source, and only then
+/// remove the source. Any failure leaves the source untouched. Identical
+/// names at the destination are auto-renamed, never overwritten.
+pub fn rehome_verified(plans: &[RehomePlan], progress: &(dyn Fn(usize, usize) + Send + Sync)) -> RehomeOutcome {
+    use crate::image_reader::hash_all_bytes;
+
+    let mut outcome = RehomeOutcome {
+        planned: plans.len(),
+        moved: 0,
+        renamed_on_collision: 0,
+        failures: Vec::new(),
+    };
+    let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+
+    for (i, plan) in plans.iter().enumerate() {
+        progress(i + 1, plans.len());
+
+        // A plan whose target resolves to its own current path is a no-op.
+        if plan.path == plan.target {
+            outcome.moved += 1;
+            continue;
+        }
+
+        let src_meta = match std::fs::metadata(&plan.path) {
+            Ok(m) => m,
+            Err(e) => {
+                outcome
+                    .failures
+                    .push((plan.path.clone(), format!("source not readable: {e}")));
+                continue;
+            }
+        };
+
+        let src_hash = match hash_all_bytes(&plan.path) {
+            Ok(h) => h,
+            Err(e) => {
+                outcome
+                    .failures
+                    .push((plan.path.clone(), format!("source hash failed: {e}")));
+                continue;
+            }
+        };
+
+        let dir = match plan.target.parent() {
+            Some(p) => p.to_path_buf(),
+            None => {
+                outcome
+                    .failures
+                    .push((plan.path.clone(), "target has no parent directory".into()));
+                continue;
+            }
+        };
+        let filename = file_name(&plan.path);
+        let seed_dir = dir.clone();
+        let names = taken
+            .entry(dir.clone())
+            .or_insert_with(|| existing_names(&seed_dir));
+        let unique = unique_name(&filename, names);
+        names.insert(unique.to_lowercase());
+        let target = dir.join(&unique);
+
+        // Copy first. The source is never touched before verification.
+        if let Some(parent) = target.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                outcome
+                    .failures
+                    .push((plan.path.clone(), format!("cannot create destination folder: {e}")));
+                continue;
+            }
+        }
+        if let Err(e) = std::fs::copy(&plan.path, &target) {
+            let _ = std::fs::remove_file(&target);
+            outcome
+                .failures
+                .push((plan.path.clone(), format!("copy failed: {e}")));
+            continue;
+        }
+
+        // Byte-verify the copy before removing the source.
+        let dst_size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+        let verified = dst_size == src_meta.len()
+            && hash_all_bytes(&target).map(|h| h == src_hash).unwrap_or(false);
+
+        if !verified {
+            let _ = std::fs::remove_file(&target);
+            outcome
+                .failures
+                .push((plan.path.clone(), "verification failed: destination bytes differ".into()));
+            continue;
+        }
+
+        // Verified: only now remove the source.
+        if let Err(e) = std::fs::remove_file(&plan.path) {
+            outcome
+                .failures
+                .push((target.clone(), format!("copied and verified, but source removal failed (both copies exist): {e}")));
+            continue;
+        }
+
+        outcome.moved += 1;
+        if unique != filename {
+            outcome.renamed_on_collision += 1;
+        }
+    }
+
+    outcome
 }

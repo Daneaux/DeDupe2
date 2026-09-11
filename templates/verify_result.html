@@ -1,0 +1,83 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Library Verification</h2>
+      <span class="subtitle">{{ root }}</span>
+    </div>
+  </div>
+
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Mismatches</span>
+      <span class="badge badge-dirty" id="verify-mismatch-badge">{{ mismatch_count }}</span>
+      <span class="collection-sub" id="verify-mismatch-note">EXIF date disagrees with folder date</span>
+    </div>
+    <div class="field verify-days-filter">
+      <span>Show mismatches with <input type="number" id="verify-days" value="10" min="0" class="days-input" /> or more days off</span>
+      <span class="hint" id="verify-days-note"></span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Path</th><th>EXIF date</th><th>Folder date</th><th>Days off</th></tr></thead>
+        <tbody id="verify-mismatch-rows"></tbody>
+      </table>
+    </div>
+  </article>
+
+  <form method="post" action="/verify/rehome" id="verify-rehome-form" class="merge-form">
+    <input type="hidden" name="mismatches" id="rehome-mismatches" value="" />
+    <input type="hidden" name="root" value="{{ root }}" />
+    <label class="field">
+      <span>Destination format for re-homed files</span>
+      <input type="text" name="format" value="YYYY/MM-DD <folder description>" />
+      <span class="hint">The new folder comes from each file's true EXIF date, keeping the description of the folder it currently sits in. Safety: each file is copied, byte-verified, and only then removed from its old folder. Name collisions are renamed, never overwritten.</span>
+    </label>
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary" {% if mismatch_count == 0 %}disabled{% endif %}><span id="rehome-label">Re-home</span> <span id="rehome-count">{{ mismatch_count }}</span> mismatches (copy → verify → remove)</button>
+    </div>
+  </form>
+
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">All files</span>
+      <span class="badge badge-ok">{{ ok }}</span>
+      <span class="collection-sub">verified OK · {{ total }} total</span>
+    </div>
+    <div class="field verify-days-filter">
+      <span>Status filter</span>
+      <select id="verify-status-filter">
+        <option value="all">All</option>
+        <option value="ok">OK</option>
+        <option value="mismatch">Mismatch</option>
+        <option value="outside">Outside date structure</option>
+        <option value="undated">Undated</option>
+      </select>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Path</th><th>Status</th><th>EXIF date</th><th>Folder date</th><th>Days off</th></tr></thead>
+        <tbody id="verify-files-rows"></tbody>
+      </table>
+      <p class="hint" id="verify-files-note"></p>
+    </div>
+  </article>
+
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Summary</span>
+      <span class="badge badge-ok">{{ ok }}</span>
+      <span class="collection-sub">files verified</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Total files</th><th>OK</th><th>Mismatches</th><th>Outside date structure</th><th>Undated</th></tr></thead>
+        <tbody>
+          <tr class="row-a"><td>{{ total }}</td><td>{{ ok }}</td><td>{{ mismatch_count }}</td><td>{{ outside_structure }}</td><td>{{ undated }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </article>
+
+  <script id="verify-mismatches-data" type="application/json">{{ mismatches_json|safe }}</script>
+  <script id="verify-files-data" type="application/json">{{ files_json|safe }}</script>
+</section>

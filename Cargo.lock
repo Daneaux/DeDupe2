@@ -534,6 +534,7 @@ dependencies = [
  "rayon",
  "seahash",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-stream",

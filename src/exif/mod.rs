@@ -1,6 +1,9 @@
 mod ciff;
 
+pub const EXIF_TIMEOUT: Duration = Duration::from_secs(10);
+
 use std::fmt;
+use std::time::Duration;
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -31,10 +34,25 @@ impl fmt::Display for CreationDate {
 }
 
 pub fn creation_date(path: &Path) -> CreationDate {
-    // Decoders can panic on malformed files; unwind per file and treat it as
-    // unknown rather than poisoning the whole scan.
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| creation_date_inner(path)))
-        .unwrap_or(CreationDate::Unknown)
+    creation_date_with_timeout(path, EXIF_TIMEOUT)
+}
+
+/// `creation_date` with a hard per-file time limit. Decoders can stall
+/// indefinitely on malformed files; a timed-out file is abandoned and falls
+/// back to the folder-name proxy date. (A leaked worker thread per stalled
+/// file is the price of never freezing a scan.)
+pub fn creation_date_with_timeout(path: &Path, timeout: Duration) -> CreationDate {
+    let worker_path = path.to_path_buf();
+    let proxy_path = path.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(creation_date_inner(&worker_path));
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(date) => date,
+        Err(_) => folder_proxy_date(&proxy_path).unwrap_or(CreationDate::Unknown),
+    }
 }
 
 fn creation_date_inner(path: &Path) -> CreationDate {
@@ -83,7 +101,7 @@ fn creation_date_inner(path: &Path) -> CreationDate {
 
 /// Derive a date from the file's folder layout: a `MM-DD` event folder under a
 /// `YYYY` year folder, or a folder named `YYYY-MM-DD` directly.
-fn folder_proxy_date(path: &Path) -> Option<CreationDate> {
+pub fn folder_proxy_date(path: &Path) -> Option<CreationDate> {
     let parent = path.parent()?.file_name()?.to_str()?.to_string();
 
     if let Some((y, m, d)) = parse_ymd_folder(&parent) {
@@ -107,7 +125,7 @@ fn date_ymd(y: u32, m: u32, d: u32) -> CreationDate {
     CreationDate::DateCreated(format!("{y:04}-{m:02}-{d:02}"))
 }
 
-fn parse_ymd_folder(name: &str) -> Option<(u32, u32, u32)> {
+pub fn parse_ymd_folder(name: &str) -> Option<(u32, u32, u32)> {
     let b = name.as_bytes();
     let digit = |i: usize| b.get(i).map(|c| c.is_ascii_digit()).unwrap_or(false);
     if b.len() >= 10
@@ -127,7 +145,7 @@ fn parse_ymd_folder(name: &str) -> Option<(u32, u32, u32)> {
     None
 }
 
-fn parse_md_folder(name: &str) -> Option<(u32, u32)> {
+pub fn parse_md_folder(name: &str) -> Option<(u32, u32)> {
     let b = name.as_bytes();
     let digit = |i: usize| b.get(i).map(|c| c.is_ascii_digit()).unwrap_or(false);
     if b.len() >= 5 && digit(0) && digit(1) && b[2] == b'-' && digit(3) && digit(4) {
@@ -143,6 +161,32 @@ fn is_movie_ext(path: &Path) -> bool {
         path.extension().and_then(|e| e.to_str()),
         Some(ext) if matches!(ext.to_ascii_lowercase().as_str(), "mp4" | "mov" | "m4v")
     )
+}
+
+/// Pick the capture date from rawler's parsed EXIF fields, in priority
+/// order: DateTimeOriginal (when the shutter fired) > CreateDate > ModifyDate
+/// (the file-change date, which can be arbitrarily recent and wrong).
+pub fn select_capture_date(exif: &rawler::exif::Exif) -> Option<CreationDate> {
+    for value in [
+        exif.date_time_original.as_ref(),
+        exif.create_date.as_ref(),
+        exif.modify_date.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for fmt in ["%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y:%m:%d"] {
+            if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(value, fmt) {
+                return Some(CreationDate::DateCreated(
+                    dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+                ));
+            }
+            if let Ok(d) = chrono::NaiveDate::parse_from_str(value, fmt) {
+                return Some(CreationDate::DateCreated(d.format("%Y-%m-%d").to_string()));
+            }
+        }
+    }
+    None
 }
 
 fn raw_creation_date(path: &Path) -> CreationDate {
@@ -161,6 +205,14 @@ fn raw_creation_date(path: &Path) -> CreationDate {
         Ok(metadata) => metadata,
         Err(_) => return CreationDate::Unknown,
     };
+
+    // Prefer the EXIF capture dates (DateTimeOriginal > CreateDate >
+    // ModifyDate). rawler's `last_modified()` only reads ModifyDate (0x0132,
+    // the "file changed" date), which many files do not carry — e.g.
+    // Panasonic RW2 stores only DateTimeOriginal/CreateDate.
+    if let Some(date) = select_capture_date(&metadata.exif) {
+        return date;
+    }
 
     match metadata.last_modified() {
         Ok(Some(t)) => CreationDate::DateCreated(format_system_time(t)),

@@ -12,9 +12,13 @@ use dedupe2::filemover::{
 };
 use dedupe2::Scanner::compare::{
     compare_folders_with_progress, compare_sets_with_progress, deep_scan_pairs_with_progress,
-    scan_exif_with_progress, Comparison, DupPair, SetComparison,
+    scan_exif_with_progress, verify_tree_dates_with_progress, Comparison, DupPair,
+    SetComparison, VerifyOutcome,
 };
-use dedupe2::filemover::{destination_for, transfer_originals_with_progress, CopyOutcome};
+use dedupe2::filemover::{
+    destination_for, plan_rehome, rehome_verified, transfer_originals_with_progress,
+    CopyOutcome, RehomeOutcome,
+};
 use std::process::Command;
 
 use dedupe2::exif::CreationDate;
@@ -103,6 +107,50 @@ struct CompareCopiedTemplate {
 struct SetsFormTemplate {
     title: &'static str,
     page: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "verify.html")]
+struct VerifyFormTemplate {
+    title: &'static str,
+    page: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "verify_result.html")]
+struct VerifyResultTemplate {
+    root: String,
+    total: usize,
+    ok: usize,
+    mismatch_count: usize,
+    outside_structure: usize,
+    undated: usize,
+    mismatches_json: String,
+    files_json: String,
+}
+
+#[derive(serde::Deserialize)]
+struct VerifyForm {
+    root: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RehomeForm {
+    mismatches: String,
+    root: String,
+    format: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "rehome_result.html")]
+struct RehomeResultTemplate {
+    moved: usize,
+    renamed_on_collision: usize,
+    failure_count: usize,
+    failures: Vec<(String, String)>,
+    remaining_mismatches: usize,
+    reverified_total: usize,
+    root: String,
 }
 
 #[derive(Template)]
@@ -632,6 +680,170 @@ fn render_deep_scan(
     tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
 }
 
+async fn verify_form() -> VerifyFormTemplate {
+    VerifyFormTemplate {
+        title: "DeDupe2",
+        page: "verify",
+    }
+}
+
+async fn verify_run(
+    Form(form): Form<VerifyForm>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
+    let root_str = form.root.trim().to_string();
+    if root_str.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "provide the destination tree".into()));
+    }
+    let root = PathBuf::from(&root_str);
+
+    let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+    let progress_tx = tx.clone();
+    let done_tx = tx.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let progress = move |done: usize, total: usize| {
+            let _ = progress_tx.send(Msg::Progress(done, total));
+        };
+        match verify_tree_dates_with_progress(&root, &progress) {
+            Ok(outcome) => {
+                let html = render_verify(&outcome, &root_str);
+                let _ = done_tx.send(Msg::Done(html));
+            }
+            Err(e) => {
+                let _ = done_tx.send(Msg::Error(e.to_string()));
+            }
+        }
+    });
+
+    Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
+}
+
+fn render_verify(outcome: &VerifyOutcome, root: &str) -> String {
+    let mismatches_json = serde_json::to_string(
+        &outcome
+            .mismatches
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "path": to_string(&m.path),
+                    "exif": m.exif_date,
+                    "folder": m.folder_date,
+                    "days": m.days_off,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".into());
+
+    let files_json = serde_json::to_string(
+        &outcome
+            .files
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "path": to_string(&f.path),
+                    "exif": f.exif_date,
+                    "folder": f.folder_date,
+                    "status": f.status.as_str(),
+                    "days": f.days_off,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".into());
+
+    let tpl = VerifyResultTemplate {
+        root: root.to_string(),
+        total: outcome.total,
+        ok: outcome.ok,
+        mismatch_count: outcome.mismatches.len(),
+        outside_structure: outcome.outside_structure,
+        undated: outcome.undated,
+        mismatches_json,
+        files_json,
+    };
+    tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
+}
+
+async fn verify_rehome(
+    Form(form): Form<RehomeForm>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
+    let mut mismatches: Vec<(PathBuf, String)> = Vec::new();
+    for line in form.mismatches.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let path = parts.next().unwrap_or("").trim();
+        let date = parts.next().unwrap_or("").trim();
+        if !path.is_empty() && !date.is_empty() {
+            mismatches.push((PathBuf::from(path), date.to_string()));
+        }
+    }
+    if mismatches.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "no mismatches to re-home".into()));
+    }
+    let root = PathBuf::from(form.root.trim());
+    if root.as_os_str().is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "missing destination tree root".into()));
+    }
+    let format = form
+        .format
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
+
+    let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+    let progress_tx = tx.clone();
+    let done_tx = tx.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let progress = move |done: usize, total: usize| {
+            let _ = progress_tx.send(Msg::Progress(done, total));
+        };
+        let plans = plan_rehome(&mismatches, &root, &format);
+        let outcome = rehome_verified(&plans, &progress);
+
+        // Prove it: re-verify the tree after the re-home.
+        let reverified = match verify_tree_dates_with_progress(&root, &progress) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = done_tx.send(Msg::Error(e.to_string()));
+                return;
+            }
+        };
+
+        let html = render_rehome(&outcome, &reverified, &root);
+        let _ = done_tx.send(Msg::Done(html));
+    });
+
+    Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
+}
+
+fn render_rehome(
+    outcome: &RehomeOutcome,
+    reverified: &VerifyOutcome,
+    root: &Path,
+) -> String {
+    let failures: Vec<(String, String)> = outcome
+        .failures
+        .iter()
+        .map(|(p, r)| (to_string(p), r.clone()))
+        .collect();
+
+    let tpl = RehomeResultTemplate {
+        moved: outcome.moved,
+        renamed_on_collision: outcome.renamed_on_collision,
+        failure_count: failures.len(),
+        failures,
+        remaining_mismatches: reverified.mismatches.len(),
+        reverified_total: reverified.total,
+        root: to_string(root),
+    };
+    tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
+}
+
 async fn sets_form() -> SetsFormTemplate {
     SetsFormTemplate {
         title: "DeDupe2",
@@ -854,6 +1066,9 @@ async fn main() {
         .route("/compare/copy", post(compare_copy))
         .route("/sets", get(sets_form))
         .route("/sets/run", post(sets_run))
+        .route("/verify", get(verify_form))
+        .route("/verify/run", post(verify_run))
+        .route("/verify/rehome", post(verify_rehome))
         .nest_service("/static", ServeDir::new("static"))
         // Compare forms post the full originals list back to the server (one
         // path per line) — several MB for large candidate trees. NOTE: this
