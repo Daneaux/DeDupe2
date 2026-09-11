@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel" role="tabpanel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Compare Sets</h2>
+      <span class="subtitle">Set differences between one destination and N candidates</span>
+    </div>
+  </div>
+
+  <form method="post" action="/sets/run" id="sets-form">
+    <label class="field">
+      <span>Destination tree (A)</span>
+      <input type="text" name="a" placeholder="/path/to/library" />
+    </label>
+
+    <label class="field">
+      <span>Candidate trees (B, C, …)</span>
+      <textarea name="candidates" rows="5" placeholder="/path/to/setB&#10;/path/to/setC"></textarea>
+      <span class="hint">One candidate tree per line.</span>
+    </label>
+
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary">Compare</button>
+    </div>
+  </form>
+</section>
+
+<div id="sets-progress" class="merge-progress" hidden>
+  <div class="merge-progress-label" id="sets-progress-text">Working…</div>
+  <div class="merge-progress-track"><div class="merge-progress-fill" id="sets-progress-fill"></div></div>
+</div>
+
+<div id="sets-result"></div>
+
+<script src="/static/compare.js?v=11"></script>
+{% endblock %}

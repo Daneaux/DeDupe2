@@ -12,10 +12,12 @@
     <nav class="tabs" role="tablist" aria-label="Primary">
       <a class="tab tab-link{% if page == "consolidate" %} active{% endif %}" href="/consolidate">Consolidate</a>
       <a class="tab tab-link{% if page == "compare" %} active{% endif %}" href="/compare">Compare Folders</a>
+      <a class="tab tab-link{% if page == "sets" %} active{% endif %}" href="/sets">Compare Sets</a>
     </nav>
   </header>
   <main class="content">
     {% block content %}{% endblock %}
   </main>
+  <script src="/static/fields.js?v=1"></script>
 </body>
 </html>

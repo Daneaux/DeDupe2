@@ -1,0 +1,52 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Set Comparison</h2>
+      <span class="subtitle">A: {{ a }}</span>
+    </div>
+  </div>
+
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Destination A</span>
+      <span class="badge badge-ok">{{ a_unique }}</span>
+      <span class="collection-sub">unique to A</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Files</th><th>Unique to A</th><th>Unreadable</th></tr></thead>
+        <tbody>
+          <tr class="row-a"><td>{{ a_total }}</td><td>{{ a_unique }}</td><td>{{ a_unreadable }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </article>
+
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Candidates</span>
+      <span class="badge badge-dirty">{{ candidates_only }}</span>
+      <span class="collection-sub">in candidates, not in A</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Tree</th><th>Files</th><th>Duplicates (in A)</th><th>Unique to tree</th><th>Shared with candidates</th><th>Unreadable</th></tr></thead>
+        <tbody>
+          {% for t in candidates %}
+          <tr class="row-b">
+            <td class="path clickable" data-reveal="{{ t.root }}">{{ t.root }}</td>
+            <td>{{ t.total }}</td>
+            <td>{{ t.duplicates }}</td>
+            <td>{{ t.unique_to_tree }}</td>
+            <td>{{ t.shared_with_candidates }}</td>
+            <td>{{ t.unreadable }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="collection-foot">
+      <span class="hint">Duplicates (A ∩ candidates): {{ duplicates }} · Candidates-only (not in A): {{ candidates_only }}</span>
+    </div>
+  </article>
+</section>

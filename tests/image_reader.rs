@@ -390,3 +390,72 @@ fn mov_hashes_of_exif_modified_variants_match() {
     let hb = dedupe2::image_reader::hash_image_data_n(&mov_sample_mod_exif(), 64 * 1024);
     assert_eq!(ha, hb);
 }
+
+#[test]
+fn png_image_data_is_decoded_and_metadata_free() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/png/IMG_5526.PNG");
+    if !path.exists() {
+        return; // sample image not present in this checkout
+    }
+
+    let data = read_image_data(&path, ReadLimit::First(64 * 1024)).unwrap();
+    assert_eq!(data.len(), 64 * 1024);
+
+    // The bytes are the IDAT stream (zlib-compressed picture data), not the
+    // raw container bytes (which start with the PNG signature).
+    let (hash, decoded) = dedupe2::image_reader::hash_image_data_status(&path, 64 * 1024);
+    assert!(decoded);
+    assert_eq!(hash, seahash::hash(&data));
+
+    let raw = fs::read(&path).unwrap();
+    assert_ne!(raw[..64], data[..64]);
+}
+
+#[test]
+fn png_hash_ignores_chunks_after_iend() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/png/IMG_5526.PNG");
+    if !path.exists() {
+        return; // sample image not present in this checkout
+    }
+
+    let original = fs::read(&path).unwrap();
+    let path2 = dir.path().join("with_metadata.png");
+
+    // Append a tEXt chunk after IEND: real to the file bytes, invisible to
+    // the decoder, and excluded from the image-data hash.
+    let mut with_metadata = original.clone();
+    let text = b"Comment|some metadata that must not change the hash";
+    with_metadata.extend_from_slice(&(text.len() as u32).to_be_bytes());
+    with_metadata.extend_from_slice(b"tEXt");
+    with_metadata.extend_from_slice(text);
+    with_metadata.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // crc placeholder
+    fs::write(&path2, &with_metadata).unwrap();
+
+    assert_ne!(original, with_metadata);
+    assert_eq!(
+        read_image_data(&path, ReadLimit::First(64 * 1024)).unwrap(),
+        read_image_data(&path2, ReadLimit::First(64 * 1024)).unwrap()
+    );
+}
+
+#[test]
+fn raster_bmp_hashes_decoded_pixels() {
+    use image::{ImageBuffer, Rgb};
+
+    let dir = tempfile::tempdir().unwrap();
+    let img: ImageBuffer<Rgb<u8>, Vec<u8>> =
+        ImageBuffer::from_fn(16, 16, |x, y| Rgb([x as u8 * 7, y as u8 * 11, 42]));
+    let path = dir.path().join("test.bmp");
+    img.save(&path).unwrap();
+
+    let expected = image::open(&path).unwrap().to_rgba8().into_raw();
+    let data = read_image_data(&path, ReadLimit::All).unwrap();
+    assert_eq!(data, expected);
+
+    let decoded = read_image(&path).unwrap();
+    assert_eq!(decoded.width, 16);
+    assert_eq!(decoded.height, 16);
+}

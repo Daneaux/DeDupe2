@@ -1,0 +1,54 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Deep Scan</h2>
+      <span class="subtitle">{{ checked }} pairs checked · {{ removed_count }} removed as false positives · {{ kept }} confirmed duplicates</span>
+    </div>
+  </div>
+
+  {% if removed.len() == 0 %}
+  <p class="placeholder">No false positives — every duplicate pair was confirmed by a full comparison.</p>
+  {% else %}
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Removed false positives</span>
+      <span class="badge badge-dirty">{{ removed_count }}</span>
+      <span class="collection-sub">not duplicates &mdash; these files were added to originals</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Destination (A)</th><th>Candidate (B)</th></tr></thead>
+        <tbody>
+          {% for p in removed %}
+          <tr class="row-b">
+            <td class="path clickable" data-reveal="{{ p.a }}">{{ p.a }}</td>
+            <td class="path clickable" data-reveal="{{ p.b }}">{{ p.b }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+  {% endif %}
+
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Originals</span>
+      <span class="badge badge-ok">{{ valid_count }}</span>
+      <span class="collection-sub">ready for the EXIF scan</span>
+    </div>
+    <form method="post" action="/compare/exif" id="compare-exif-form" class="merge-form">
+      <input type="hidden" name="originals" value="{{ originals_input }}" />
+      <input type="hidden" name="a" value="{{ destination }}" />
+      <input type="hidden" name="destination" value="{{ destination }}" />
+      <input type="hidden" name="format" value="{{ format }}" />
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-small btn-primary" {% if valid_count == 0 %}disabled{% endif %}>Scan for EXIF</button>
+      </div>
+    </form>
+  </article>
+
+  <div class="toolbar-actions">
+    <a class="btn btn-secondary" href="/compare">Back to compare</a>
+  </div>
+</section>

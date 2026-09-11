@@ -1,8 +1,8 @@
 (function () {
-  const progress = document.getElementById("compare-progress");
-  const fill = document.getElementById("compare-progress-fill");
-  const text = document.getElementById("compare-progress-text");
-  const result = document.getElementById("compare-result");
+  const progress = document.getElementById("compare-progress") || document.getElementById("sets-progress");
+  const fill = document.getElementById("compare-progress-fill") || document.getElementById("sets-progress-fill");
+  const text = document.getElementById("compare-progress-text") || document.getElementById("sets-progress-text");
+  const result = document.getElementById("compare-result") || document.getElementById("sets-result");
 
   let phaseLabel = "Working";
 
@@ -51,6 +51,12 @@
     } else if (form.id === "compare-copy-form") {
       url = "/compare/copy";
       phaseLabel = "Copying";
+    } else if (form.id === "sets-form") {
+      url = "/sets/run";
+      phaseLabel = "Scanning";
+    } else if (form.id === "compare-deep-form") {
+      url = "/compare/deep";
+      phaseLabel = "Deep scan";
     }
     if (!url) return;
     e.preventDefault();
@@ -89,3 +95,69 @@
     });
   });
 })();
+
+// --- Reveal in folder -------------------------------------------------------
+document.addEventListener("click", function (e) {
+  const el = e.target.closest("[data-reveal]");
+  if (!el) return;
+  e.preventDefault();
+  fetch("/reveal?path=" + encodeURIComponent(el.dataset.reveal)).catch(function () {});
+});
+
+// --- Destination column live recompute (exif view) -------------------------
+function padNum(n, w) {
+  return String(n).padStart(w, "0");
+}
+
+function computeDestination(sourcePath, dateStr, format, destRoot) {
+  const digits = String(dateStr).split(/\D+/).filter(Boolean).map(Number);
+  if (digits.length < 3) return "";
+  const [y, m, d] = digits;
+
+  const parts = String(sourcePath).split("/").filter(Boolean);
+  const filename = parts.pop() || "";
+  const folder = parts.pop() || "";
+  const ymd = folder.match(/^\d{4}-\d{2}-\d{2}\s*(.*)$/);
+  const mmdd = folder.match(/^\d{2}-\d{2}\s*(.*)$/);
+  const desc = ymd ? (ymd[1] || "").trim() : mmdd ? mmdd[1].trim() : folder.trim();
+
+  let out = format;
+  if (!desc) {
+    out = out.replace(/<folder description>/g, "").replace(/<desc>/g, "").replace(/DESC/g, "");
+    out = out.split("/").map((s) => s.replace(/^[-_\s]+|[-_\s]+$/g, "").trim()).join("/");
+  } else {
+    out = out.replace(/<folder description>/g, desc).replace(/<desc>/g, desc).replace(/DESC/g, desc);
+  }
+  out = out.replace(/YYYY/g, padNum(y, 4)).replace(/MM/g, padNum(m, 2)).replace(/DD/g, padNum(d, 2));
+
+  // If the destination root already ends with the year, don't double it.
+  const rootSegs = String(destRoot).split("/").filter(Boolean);
+  const outSegs = out.split("/").filter(Boolean);
+  if (outSegs.length > 0 && rootSegs[rootSegs.length - 1] === outSegs[0]) {
+    outSegs.shift();
+  }
+
+  return rootSegs.join("/") + "/" + outSegs.join("/") + "/" + filename;
+}
+
+function recomputeDestinations() {
+  const dest = document.getElementById("exif-destination");
+  const fmt = document.getElementById("exif-format");
+  if (!dest || !fmt) return;
+  document.querySelectorAll("tr[data-path][data-date]").forEach((tr) => {
+    const cell = tr.querySelector(".dest-cell");
+    if (!cell) return;
+    cell.textContent = computeDestination(
+      tr.dataset.path,
+      tr.dataset.date,
+      fmt.value,
+      dest.value
+    );
+  });
+}
+
+document.addEventListener("input", function (e) {
+  if (e.target.id === "exif-destination" || e.target.id === "exif-format") {
+    recomputeDestinations();
+  }
+});

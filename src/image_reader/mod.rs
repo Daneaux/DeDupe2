@@ -3,6 +3,8 @@ mod hash;
 mod heic;
 mod isobmff;
 mod jpg;
+mod raster;
+mod png;
 mod movie;
 mod raw;
 mod types;
@@ -22,11 +24,15 @@ enum FileType {
     Heic,
     Movie,
     Raw,
+    Png,
+    Raster,
 }
 
 pub fn read_image(path: &Path) -> Result<ImageData, ImageReaderError> {
     match detect_file_type(path)? {
         FileType::Jpg => jpg::decode(path),
+        FileType::Png => png::decode(path),
+        FileType::Raster => raster::decode(path),
         FileType::Heic => heic::decode(path),
         FileType::Movie => movie::decode(path),
         FileType::Raw => raw::decode(path),
@@ -36,6 +42,8 @@ pub fn read_image(path: &Path) -> Result<ImageData, ImageReaderError> {
 pub fn read_image_data(path: &Path, limit: ReadLimit) -> Result<Vec<u8>, ImageReaderError> {
     match detect_file_type(path)? {
         FileType::Jpg => jpg::image_data(path, limit),
+        FileType::Png => png::image_data(path, limit),
+        FileType::Raster => raster::image_data(path, limit),
         FileType::Heic => heic::image_data(path, limit),
         FileType::Movie => movie::image_data(path, limit),
         FileType::Raw => raw::image_data(path, limit),
@@ -45,10 +53,12 @@ pub fn read_image_data(path: &Path, limit: ReadLimit) -> Result<Vec<u8>, ImageRe
 fn detect_file_type(path: &Path) -> Result<FileType, ImageReaderError> {
     match extension_of(path) {
         Some(ext) => match ext.as_str() {
-            "heic" | "heif" => Ok(FileType::Heic),
+            "heic" | "heif" | "avif" => Ok(FileType::Heic),
             e if VIDEO_EXTENSIONS.contains(&e) => Ok(FileType::Movie),
             e if RAW_EXTENSIONS.contains(&e) => Ok(FileType::Raw),
-            e if IMAGE_EXTENSIONS.contains(&e) => Ok(FileType::Jpg),
+            "png" => Ok(FileType::Png),
+            "jpg" | "jpeg" => Ok(FileType::Jpg),
+            e if IMAGE_EXTENSIONS.contains(&e) => Ok(FileType::Raster),
             _ => Err(ImageReaderError::new(format!("unsupported file type: .{ext}"))),
         },
         None => Err(ImageReaderError::new("file has no extension")),

@@ -2,7 +2,7 @@ use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 
 use askama::Template;
-use axum::extract::{DefaultBodyLimit, Form};
+use axum::extract::{DefaultBodyLimit, Form, Query};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::{routing::get, routing::post, Router};
@@ -11,9 +11,12 @@ use dedupe2::filemover::{
     preview_consolidate_events_with_progress, ConsolidationOutcome, ConsolidationPlan,
 };
 use dedupe2::Scanner::compare::{
-    compare_folders_with_progress, scan_exif_with_progress, Comparison,
+    compare_folders_with_progress, compare_sets_with_progress, deep_scan_pairs_with_progress,
+    scan_exif_with_progress, Comparison, DupPair, SetComparison,
 };
 use dedupe2::filemover::{destination_for, transfer_originals_with_progress, CopyOutcome};
+use std::process::Command;
+
 use dedupe2::exif::CreationDate;
 use dedupe2::filemover::Operation;
 use tokio::sync::mpsc;
@@ -68,6 +71,7 @@ struct CompareResultTemplate {
     a_only_count: usize,
     b_only_count: usize,
     dup_total: usize,
+    dup_pairs_all: String,
     unreadable_rows: Vec<PathRowView>,
     unreadable_more: usize,
     unreadable_count: usize,
@@ -77,7 +81,8 @@ struct CompareResultTemplate {
 #[derive(Template)]
 #[template(path = "compare_exif.html")]
 struct CompareExifTemplate {
-    a: String,
+    destination: String,
+    format: String,
     originals_input: String,
     rows: Vec<ExifRowView>,
     valid_count: usize,
@@ -93,10 +98,72 @@ struct CompareCopiedTemplate {
     format: String,
 }
 
+#[derive(Template)]
+#[template(path = "sets.html")]
+struct SetsFormTemplate {
+    title: &'static str,
+    page: &'static str,
+}
+
+#[derive(Template)]
+#[template(path = "sets_result.html")]
+struct SetsResultTemplate {
+    a: String,
+    a_total: usize,
+    a_unique: usize,
+    a_unreadable: usize,
+    duplicates: usize,
+    candidates_only: usize,
+    candidates: Vec<SetTreeRowView>,
+}
+
+struct SetTreeRowView {
+    pub root: String,
+    pub total: usize,
+    pub duplicates: usize,
+    pub unique_to_tree: usize,
+    pub shared_with_candidates: usize,
+    pub unreadable: usize,
+}
+
+#[derive(serde::Deserialize)]
+struct SetForm {
+    a: String,
+    candidates: String,
+}
+
+#[derive(serde::Deserialize)]
+struct DeepForm {
+    pairs: String,
+    originals: String,
+    destination: Option<String>,
+    format: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "deep_scan.html")]
+struct DeepScanTemplate {
+    checked: usize,
+    kept: usize,
+    removed_count: usize,
+    removed: Vec<DeepPairView>,
+    originals_input: String,
+    destination: String,
+    format: String,
+    valid_count: usize,
+}
+
+struct DeepPairView {
+    pub a: String,
+    pub b: String,
+}
+
 #[derive(serde::Deserialize)]
 struct ExifForm {
     originals: String,
     a: Option<String>,
+    destination: Option<String>,
+    format: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -310,6 +377,18 @@ async fn compare_exif(
         return Err((StatusCode::BAD_REQUEST, "no originals to scan".into()));
     }
     let a_default = form.a.unwrap_or_default();
+    let destination_root = form
+        .destination
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(a_default.as_str())
+        .to_string();
+    let format = form
+        .format
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
 
     let (tx, rx) = mpsc::unbounded_channel::<Msg>();
     let progress_tx = tx.clone();
@@ -321,7 +400,7 @@ async fn compare_exif(
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
         let dated = scan_exif_with_progress(&originals, &progress);
-        let html = render_compare_exif(&dated, &a_default, &originals_input);
+        let html = render_compare_exif(&dated, &destination_root, &format, &originals_input);
         let _ = done_tx.send(Msg::Done(html));
     });
 
@@ -376,16 +455,17 @@ async fn compare_copy(
 
 fn render_compare_exif(
     dated: &[dedupe2::Scanner::compare::DatedOriginal],
-    a: &str,
+    destination_root: &str,
+    format: &str,
     originals_input: &str,
 ) -> String {
-    let destination_root = PathBuf::from(a);
+    let dest_path = PathBuf::from(destination_root);
     let rows: Vec<ExifRowView> = dated
         .iter()
         .map(|d| {
             let valid = matches!(d.creation_date, CreationDate::DateCreated(_));
             let destination = if valid {
-                destination_for(&d.path, &d.creation_date, &destination_root, DEFAULT_FORMAT)
+                destination_for(&d.path, &d.creation_date, &dest_path, format)
                     .map(|p| to_string(&p))
                     .unwrap_or_default()
             } else {
@@ -403,7 +483,8 @@ fn render_compare_exif(
     let invalid_count = rows.len() - valid_count;
 
     let tpl = CompareExifTemplate {
-        a: a.to_string(),
+        destination: destination_root.to_string(),
+        format: format.to_string(),
         originals_input: originals_input.to_string(),
         rows,
         valid_count,
@@ -418,6 +499,203 @@ fn render_compare_copied(outcome: &CopyOutcome, destination: &Path, format: &str
         skipped: outcome.skipped_no_exif,
         destination: to_string(destination),
         format: format.to_string(),
+    };
+    tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
+}
+
+#[derive(serde::Deserialize)]
+struct RevealQuery {
+    path: String,
+}
+
+async fn reveal(Query(q): Query<RevealQuery>) -> Result<(), (StatusCode, String)> {
+    let path = q.path.trim();
+    if path.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "empty path".into()));
+    }
+
+    // Open the containing folder with the file selected (no app launch).
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg("-R").arg(path).spawn();
+    #[cfg(target_os = "windows")]
+    let result = Command::new("explorer").arg(format!("/select,{}", path)).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = Command::new("xdg-open")
+        .arg(std::path::Path::new(path).parent().unwrap_or(std::path::Path::new("/")))
+        .spawn();
+    #[cfg(target_os = "windows")]
+    let _ = &result;
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = &result;
+
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("reveal failed: {e}"))),
+    }
+}
+
+async fn compare_deep(
+    Form(form): Form<DeepForm>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
+    let mut pairs = Vec::new();
+    for line in form.pairs.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let a = parts.next().unwrap_or("").trim();
+        let b = parts.next().unwrap_or("").trim();
+        if !a.is_empty() && !b.is_empty() {
+            pairs.push(DupPair {
+                a: PathBuf::from(a),
+                b: PathBuf::from(b),
+            });
+        }
+    }
+    if pairs.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "no duplicate pairs to scan".into()));
+    }
+
+    let destination = form
+        .destination
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    let format = form
+        .format
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
+
+    let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+    let progress_tx = tx.clone();
+    let done_tx = tx.clone();
+    let originals_input = form.originals.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let progress = move |done: usize, total: usize| {
+            let _ = progress_tx.send(Msg::Progress(done, total));
+        };
+        let outcome = deep_scan_pairs_with_progress(&pairs, &progress);
+
+        // False positives (b side) join the originals list.
+        let mut originals: Vec<String> = parse_paths(&originals_input)
+            .into_iter()
+            .map(|p| to_string(&p))
+            .collect();
+        for pair in &outcome.removed {
+            let b = to_string(&pair.b);
+            if !originals.contains(&b) {
+                originals.push(b);
+            }
+        }
+        originals.sort();
+        let originals_input = originals.join("\n");
+        let valid_count = originals.len();
+
+        let html = render_deep_scan(&outcome, &originals_input, &destination, &format, valid_count);
+        let _ = done_tx.send(Msg::Done(html));
+    });
+
+    Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
+}
+
+fn render_deep_scan(
+    outcome: &dedupe2::Scanner::compare::DeepScanOutcome,
+    originals_input: &str,
+    destination: &str,
+    format: &str,
+    valid_count: usize,
+) -> String {
+    let removed: Vec<DeepPairView> = outcome
+        .removed
+        .iter()
+        .map(|p| DeepPairView {
+            a: to_string(&p.a),
+            b: to_string(&p.b),
+        })
+        .collect();
+
+    let tpl = DeepScanTemplate {
+        checked: outcome.checked,
+        kept: outcome.kept,
+        removed_count: outcome.removed.len(),
+        removed,
+        originals_input: originals_input.to_string(),
+        destination: destination.to_string(),
+        format: format.to_string(),
+        valid_count,
+    };
+    tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
+}
+
+async fn sets_form() -> SetsFormTemplate {
+    SetsFormTemplate {
+        title: "DeDupe2",
+        page: "sets",
+    }
+}
+
+async fn sets_run(
+    Form(form): Form<SetForm>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
+    let a_str = form.a.trim().to_string();
+    if a_str.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "provide the destination tree (A)".into()));
+    }
+    let candidates = parse_paths(&form.candidates);
+    if candidates.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "provide at least one candidate tree".into()));
+    }
+    let a = PathBuf::from(&a_str);
+
+    let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+    let progress_tx = tx.clone();
+    let done_tx = tx.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let progress = move |done: usize, total: usize| {
+            let _ = progress_tx.send(Msg::Progress(done, total));
+        };
+        match compare_sets_with_progress(&a, &candidates, &progress) {
+            Ok(cmp) => {
+                let html = render_sets(&cmp, &a_str);
+                let _ = done_tx.send(Msg::Done(html));
+            }
+            Err(e) => {
+                let _ = done_tx.send(Msg::Error(e.to_string()));
+            }
+        }
+    });
+
+    Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
+}
+
+fn render_sets(cmp: &SetComparison, a: &str) -> String {
+    let candidates: Vec<SetTreeRowView> = cmp
+        .candidates
+        .iter()
+        .map(|t| SetTreeRowView {
+            root: to_string(&t.root),
+            total: t.total,
+            duplicates: t.duplicates,
+            unique_to_tree: t.unique_to_tree,
+            shared_with_candidates: t.shared_with_candidates,
+            unreadable: t.unreadable,
+        })
+        .collect();
+
+    let tpl = SetsResultTemplate {
+        a: a.to_string(),
+        a_total: cmp.a_total,
+        a_unique: cmp.a_unique,
+        a_unreadable: cmp.a_unreadable,
+        duplicates: cmp.duplicates,
+        candidates_only: cmp.candidates_only,
+        candidates,
     };
     tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
 }
@@ -443,6 +721,18 @@ fn render_compare(cmp: &Comparison, a: &str, b: &str) -> String {
         }
     }
     let dup_total = dup_rows.len();
+
+    let dup_pairs_all: Vec<String> = cmp
+        .duplicates
+        .iter()
+        .flat_map(|g| {
+            g.a.iter()
+                .flat_map(|a| g.b.iter().map(move |b| (to_string(a), to_string(b))))
+                .collect::<Vec<_>>()
+        })
+        .map(|(a, b)| format!("{a}\t{b}"))
+        .collect();
+    let dup_pairs_all = dup_pairs_all.join("\n");
 
     let a_rows: Vec<PathRowView> = cmp
         .a_only
@@ -486,6 +776,7 @@ fn render_compare(cmp: &Comparison, a: &str, b: &str) -> String {
         a_only_count: cmp.a_only.len(),
         b_only_count: cmp.b_only.len(),
         dup_total,
+        dup_pairs_all,
         unreadable_rows,
         unreadable_more,
         unreadable_count: cmp.unreadable.len(),
@@ -558,7 +849,11 @@ async fn main() {
         .route("/compare", get(compare_form))
         .route("/compare/run", post(compare_run))
         .route("/compare/exif", post(compare_exif))
+        .route("/compare/deep", post(compare_deep))
+        .route("/reveal", get(reveal))
         .route("/compare/copy", post(compare_copy))
+        .route("/sets", get(sets_form))
+        .route("/sets/run", post(sets_run))
         .nest_service("/static", ServeDir::new("static"))
         // Compare forms post the full originals list back to the server (one
         // path per line) — several MB for large candidate trees. NOTE: this

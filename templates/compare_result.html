@@ -17,7 +17,7 @@
         <thead><tr><th>Path</th></tr></thead>
         <tbody>
           {% for r in a_rows %}
-          <tr class="row-a"><td class="path">{{ r.path }}</td></tr>
+          <tr class="row-a"><td class="path clickable" data-reveal="{{ r.path }}">{{ r.path }}</td></tr>
           {% endfor %}
           {% if a_more > 0 %}
           <tr class="more-row"><td class="muted">… {{ a_more }} more not shown</td></tr>
@@ -35,6 +35,12 @@
       <span class="collection-title">Duplicates</span>
       <span class="badge badge-dirty">{{ dup_total }}</span>
       <span class="collection-sub">in both A and B</span>
+      <form method="post" action="/compare/deep" id="compare-deep-form">
+        <input type="hidden" name="pairs" value="{{ dup_pairs_all }}" />
+        <input type="hidden" name="originals" value="{{ originals_all }}" />
+        <input type="hidden" name="destination" value="{{ a }}" />
+        <button type="submit" class="btn btn-small btn-secondary">Deep scan</button>
+      </form>
     </div>
     <div class="table-scroll">
       <table class="compare-table">
@@ -43,7 +49,7 @@
           {% for r in dup_rows %}
           <tr class="{{ r.row_class }}">
             <td><span class="badge badge-{{ r.badge }}">{{ r.tree }}</span></td>
-            <td class="path">{{ r.path }}</td>
+            <td class="path clickable" data-reveal="{{ r.path }}">{{ r.path }}</td>
           </tr>
           {% endfor %}
           {% if dup_more > 0 %}
@@ -62,10 +68,22 @@
       <span class="collection-title">Originals</span>
       <span class="badge badge-ok">{{ b_only_count }}</span>
       <span class="collection-sub">photos only in B</span>
-      <form method="post" action="/compare/exif" id="compare-exif-form">
+      <form method="post" action="/compare/exif" id="compare-exif-form" class="merge-form">
         <input type="hidden" name="originals" value="{{ originals_all }}" />
         <input type="hidden" name="a" value="{{ a }}" />
-        <button type="submit" class="btn btn-small btn-primary">Scan for EXIF</button>
+        <label class="field">
+          <span>Destination folder</span>
+          <input type="text" name="destination" value="{{ a }}" />
+          <span class="hint">Where matched-format copies/moves land. If it already ends with the year, YYYY is not doubled.</span>
+        </label>
+        <label class="field">
+          <span>Destination format</span>
+          <input type="text" name="format" value="YYYY/MM-DD <folder description>" />
+          <span class="hint">Tokens: YYYY, MM, DD from the EXIF date; <code>&lt;folder description&gt;</code> (or DESC) from the source folder name.</span>
+        </label>
+        <div class="modal-actions">
+          <button type="submit" class="btn btn-small btn-primary">Scan for EXIF</button>
+        </div>
       </form>
     </div>
     <div class="table-scroll">
@@ -73,7 +91,7 @@
         <thead><tr><th>Path</th></tr></thead>
         <tbody>
           {% for r in b_rows %}
-          <tr class="row-b"><td class="path">{{ r.path }}</td></tr>
+          <tr class="row-b"><td class="path clickable" data-reveal="{{ r.path }}">{{ r.path }}</td></tr>
           {% endfor %}
           {% if b_more > 0 %}
           <tr class="more-row"><td class="muted">… {{ b_more }} more not shown</td></tr>
@@ -96,7 +114,7 @@
         <thead><tr><th>Path</th></tr></thead>
         <tbody>
           {% for r in unreadable_rows %}
-          <tr class="row-b"><td class="path">{{ r.path }}</td></tr>
+          <tr class="row-b"><td class="path clickable" data-reveal="{{ r.path }}">{{ r.path }}</td></tr>
           {% endfor %}
           {% if unreadable_more > 0 %}
           <tr class="more-row"><td class="muted">… {{ unreadable_more }} more not shown</td></tr>

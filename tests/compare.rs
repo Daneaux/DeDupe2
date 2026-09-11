@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use dedupe2::Scanner::compare::compare_folders;
+use dedupe2::exif::creation_date;
 
 fn sample(rel: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages").join(rel);
@@ -176,4 +177,145 @@ fn transfer_never_overwrites_preexisting_destination_files() {
     );
     assert!(destination.join("new1 (1).jpg").exists());
     assert!(!candidate.join("new1.jpg").exists()); // moved
+}
+
+#[test]
+fn compare_sets_reports_the_four_numbers() {
+    use dedupe2::Scanner::compare::compare_sets;
+
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    let c = root.path().join("c");
+    for d in [&a, &b, &c] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+
+    let img = sample("jpg-exif-mod/image1.JPG");      // shared photo
+    let img_exif = sample("jpg-exif-mod/image1-exif.JPG"); // same image data
+    let heic = sample("HEIC-exif-mod/heic1.HEIC");   // distinct image
+
+    // Two distinct synthesized photos (different pixels -> different hashes).
+    let synth = |seed: u8| {
+        let img = image::DynamicImage::ImageRgb8(image::ImageBuffer::from_fn(8, 8, |x, y| {
+            image::Rgb([((x as u8 * 13).wrapping_add(seed)), ((y as u8 * 29).wrapping_add(seed)), seed])
+        }));
+        let mut buf = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
+            .unwrap();
+        buf
+    };
+    let a_only_img = synth(1);
+    let shared_img = synth(2);
+
+    // A: ok.jpg (matched by B and C), a_only.jpg (unique to A)
+    std::fs::write(a.join("ok.jpg"), &img).unwrap();
+    std::fs::write(a.join("a_only.jpg"), &a_only_img).unwrap();
+
+    // B: b_dup.jpg (in A), b_only.heic (unique to B), b_and_c.jpg (also in C)
+    std::fs::write(b.join("b_dup.jpg"), &img_exif).unwrap();
+    std::fs::write(b.join("b_only.heic"), &heic).unwrap();
+    std::fs::write(b.join("b_and_c.jpg"), &shared_img).unwrap();
+
+    // C: c_dup.jpg (in A), c_and_b.jpg (same bytes as B's b_and_c.jpg)
+    std::fs::write(c.join("c_dup.jpg"), &img).unwrap();
+    std::fs::write(c.join("c_and_b.jpg"), &shared_img).unwrap();
+
+    let cmp = compare_sets(&a, &[b, c]).unwrap();
+
+    // #1 unique to A
+    assert_eq!(cmp.a_unique, 1);
+    // #2 unique to B / unique to C (not in A, not in any other set)
+    assert_eq!(cmp.candidates[0].unique_to_tree, 1); // b_only.jpg
+    assert_eq!(cmp.candidates[1].unique_to_tree, 0); // c_and_b is shared with B
+    // #3 candidates-only (not in A)
+    assert_eq!(cmp.candidates_only, 3); // b_only + b_and_c + c_and_b
+    // #4 duplicates between A and B+C
+    assert_eq!(cmp.duplicates, 2); // b_dup + c_dup
+}
+
+#[test]
+fn destination_root_ending_with_year_is_not_doubled() {
+    use dedupe2::filemover::{destination_for, Operation, transfer_originals_with_progress};
+    use dedupe2::exif::{creation_date, CreationDate};
+
+    let root = tempfile::tempdir().unwrap();
+    let candidate = root.path().join("candidate/03-15 hawaii");
+    std::fs::create_dir_all(&candidate).unwrap();
+
+    let img = sample("jpg-exif-mod/image1.JPG"); // EXIF date 2022-08-17
+    std::fs::write(candidate.join("new1.jpg"), &img).unwrap();
+
+    let date = creation_date(&candidate.join("new1.jpg"));
+    assert!(matches!(date, CreationDate::DateCreated(_)));
+
+    // Destination root already ends with the year 2022.
+    let destination = root.path().join("library/2022");
+    let target = destination_for(
+        &candidate.join("new1.jpg"),
+        &date,
+        &destination,
+        "YYYY/MM-DD <folder description>",
+    )
+    .unwrap();
+    let target_str = target.display().to_string();
+    assert!(!target_str.contains("2022/2022"), "doubled year in {target_str}");
+    assert!(target_str.ends_with("library/2022/08-17 hawaii/new1.jpg"), "{target_str}");
+
+    // And the actual transfer lands there.
+    let outcome = transfer_originals_with_progress(
+        &[candidate.join("new1.jpg")],
+        &destination,
+        "YYYY/MM-DD <folder description>",
+        Operation::Move,
+        &|_, _| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.copied, 1);
+    assert!(destination.join("08-17 hawaii/new1.jpg").exists());
+}
+
+#[test]
+fn full_date_source_folder_is_treated_as_date_not_description() {
+    use dedupe2::filemover::{destination_for, Operation, transfer_originals_with_progress};
+
+    let root = tempfile::tempdir().unwrap();
+    let img = sample("jpg-exif-mod/image1.JPG"); // EXIF date 2022-08-17
+
+    // Candidate folder named `YYYY-MM-DD` (no description).
+    let candidate = root.path().join("candidate/2013-04-05");
+    std::fs::create_dir_all(&candidate).unwrap();
+    std::fs::write(candidate.join("new1.jpg"), &img).unwrap();
+
+    let destination = root.path().join("library");
+    let target = destination_for(
+        &candidate.join("new1.jpg"),
+        &creation_date(&candidate.join("new1.jpg")),
+        &destination,
+        "YYYY/MM-DD <folder description>",
+    )
+    .unwrap();
+    let target_str = target.display().to_string();
+    assert!(
+        target_str.ends_with("library/2022/08-17/new1.jpg"),
+        "got {target_str}"
+    );
+
+    // Candidate folder `YYYY-MM-DD <description>` keeps the description.
+    let candidate2 = root.path().join("candidate2/2013-04-05 Hawaii");
+    std::fs::create_dir_all(&candidate2).unwrap();
+    std::fs::write(candidate2.join("new2.jpg"), &img).unwrap();
+
+    let target2 = destination_for(
+        &candidate2.join("new2.jpg"),
+        &creation_date(&candidate2.join("new2.jpg")),
+        &destination,
+        "YYYY/MM-DD <folder description>",
+    )
+    .unwrap();
+    assert!(
+        target2.display().to_string().ends_with("library/2022/08-17 Hawaii/new2.jpg"),
+        "got {}",
+        target2.display()
+    );
 }

@@ -64,11 +64,78 @@ fn creation_date_inner(path: &Path) -> CreationDate {
 
     // MP4/MOV are nom-exif's domain; rawler's bmff decoder is for CR3 and
     // gains nothing here, so don't fall back into it for movie files.
-    if is_movie_ext(path) {
-        return CreationDate::Unknown;
+    let movie = is_movie_ext(path);
+    if !movie {
+        let from_rawler = raw_creation_date(path);
+        if from_rawler != CreationDate::Unknown {
+            return from_rawler;
+        }
     }
 
-    raw_creation_date(path)
+    // No EXIF anywhere: a date-bearing folder (`2013/07-07` or `2013-07-07`)
+    // is a reasonable proxy for when the photo was taken.
+    if let Some(date) = folder_proxy_date(path) {
+        return date;
+    }
+
+    CreationDate::Unknown
+}
+
+/// Derive a date from the file's folder layout: a `MM-DD` event folder under a
+/// `YYYY` year folder, or a folder named `YYYY-MM-DD` directly.
+fn folder_proxy_date(path: &Path) -> Option<CreationDate> {
+    let parent = path.parent()?.file_name()?.to_str()?.to_string();
+
+    if let Some((y, m, d)) = parse_ymd_folder(&parent) {
+        return Some(date_ymd(y, m, d));
+    }
+
+    if let Some((m, d)) = parse_md_folder(&parent) {
+        let grand = path.parent()?.parent()?.file_name()?.to_str()?.to_string();
+        if grand.len() == 4 && grand.bytes().all(|c| c.is_ascii_digit()) {
+            if let Ok(y) = grand.parse::<u32>() {
+                if (1..=12).contains(&m) && (1..=31).contains(&d) {
+                    return Some(date_ymd(y, m, d));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn date_ymd(y: u32, m: u32, d: u32) -> CreationDate {
+    CreationDate::DateCreated(format!("{y:04}-{m:02}-{d:02}"))
+}
+
+fn parse_ymd_folder(name: &str) -> Option<(u32, u32, u32)> {
+    let b = name.as_bytes();
+    let digit = |i: usize| b.get(i).map(|c| c.is_ascii_digit()).unwrap_or(false);
+    if b.len() >= 10
+        && (0..4).all(digit)
+        && b[4] == b'-'
+        && digit(5)
+        && digit(6)
+        && b[7] == b'-'
+        && digit(8)
+        && digit(9)
+    {
+        let y = name.get(0..4)?.parse().ok()?;
+        let m = name.get(5..7)?.parse().ok()?;
+        let d = name.get(8..10)?.parse().ok()?;
+        return Some((y, m, d));
+    }
+    None
+}
+
+fn parse_md_folder(name: &str) -> Option<(u32, u32)> {
+    let b = name.as_bytes();
+    let digit = |i: usize| b.get(i).map(|c| c.is_ascii_digit()).unwrap_or(false);
+    if b.len() >= 5 && digit(0) && digit(1) && b[2] == b'-' && digit(3) && digit(4) {
+        let m = name.get(0..2)?.parse().ok()?;
+        let d = name.get(3..5)?.parse().ok()?;
+        return Some((m, d));
+    }
+    None
 }
 
 fn is_movie_ext(path: &Path) -> bool {

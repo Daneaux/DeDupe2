@@ -953,10 +953,37 @@ fn folder_description(path: &Path) -> String {
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .unwrap_or("");
+    // `YYYY-MM-DD <description>`: some candidate folders carry a full date;
+    // interpret it as a date, not a description.
+    if let Some(rest) = strip_full_date_prefix(name) {
+        return rest.trim().to_string();
+    }
     if is_event_name(name) {
         name[5..].trim().to_string()
     } else {
         name.trim().to_string()
+    }
+}
+
+/// If `name` starts with `YYYY-MM-DD`, return what follows it.
+fn strip_full_date_prefix(name: &str) -> Option<&str> {
+    let b = name.as_bytes();
+    let digits = |i: usize| b.get(i).map(|c| c.is_ascii_digit()).unwrap_or(false);
+    if b.len() >= 10
+        && digits(0)
+        && digits(1)
+        && digits(2)
+        && digits(3)
+        && b[4] == b'-'
+        && digits(5)
+        && digits(6)
+        && b[7] == b'-'
+        && digits(8)
+        && digits(9)
+    {
+        name.get(10..)
+    } else {
+        None
     }
 }
 
@@ -971,6 +998,18 @@ pub fn destination_for(
     let (year, month, day) = parse_date(date)?;
     let description = folder_description(path);
     let rendered = render_date_folder(format, year, month, day, &description);
+
+    // If the destination root already ends with the year (e.g.
+    // `.../AllPhotos/2014`), don't double it (`2014/2014/...`).
+    let rendered = match (year.to_string(), destination.file_name().and_then(|n| n.to_str())) {
+        (year_str, Some(root_tail)) if root_tail == year_str => rendered
+            .splitn(2, '/')
+            .nth(1)
+            .map(|s| s.to_string())
+            .unwrap_or(rendered),
+        _ => rendered,
+    };
+
     Some(destination.join(rendered).join(file_name(path)))
 }
 

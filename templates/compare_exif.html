@@ -17,10 +17,10 @@
         <thead><tr><th>Path</th><th>EXIF date</th><th>Destination</th></tr></thead>
         <tbody>
           {% for r in rows %}
-          <tr class="{% if r.valid %}row-a{% else %}row-b{% endif %}">
-            <td class="path">{{ r.path }}</td>
+          <tr class="{% if r.valid %}row-a{% else %}row-b{% endif %}" data-path="{{ r.path }}" data-date="{{ r.date }}">
+            <td class="path clickable" data-reveal="{{ r.path }}">{{ r.path }}</td>
             <td class="muted">{{ r.date }}</td>
-            <td class="muted">{{ r.destination }}</td>
+            <td class="muted dest-cell">{{ r.destination }}</td>
           </tr>
           {% endfor %}
           {% if rows.len() == 0 %}
@@ -35,12 +35,12 @@
     <input type="hidden" name="originals" value="{{ originals_input }}" />
     <label class="field">
       <span>Destination folder</span>
-      <input type="text" name="destination" value="{{ a }}" />
+      <input type="text" name="destination" id="exif-destination" value="{{ destination }}" />
     </label>
     <label class="field">
       <span>Destination format</span>
-      <input type="text" name="format" value="YYYY/MM-DD <folder description>" />
-      <span class="hint">Tokens: YYYY, MM, DD from the EXIF date; <code>&lt;folder description&gt;</code> (or DESC) from the source folder name.</span>
+      <input type="text" name="format" id="exif-format" value="{{ format }}" />
+      <span class="hint">Tokens: YYYY, MM, DD from the EXIF date; <code>&lt;folder description&gt;</code> (or DESC) from the source folder name. Editing either re-computes the Destination column.</span>
     </label>
     <label class="field">
       <span>Operation</span>
