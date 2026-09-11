@@ -436,3 +436,82 @@ fn rehome_never_overwrites_case_insensitive_name_collision() {
     assert!(landed.exists(), "incoming file must be renamed, not overwrite");
     assert_eq!(fs::read(landed).unwrap(), b"content-b-low-res");
 }
+
+#[test]
+fn transfer_uses_carried_dates_without_reextraction() {
+    use dedupe2::filemover::{transfer_dated_with_progress, Operation};
+    use dedupe2::exif::{creation_date, CreationDate};
+
+    let root = tempfile::tempdir().unwrap();
+    let candidate = root.path().join("candidate/09-27");
+    std::fs::create_dir_all(&candidate).unwrap();
+
+    // This file's real EXIF date is 2022-08-17...
+    std::fs::write(candidate.join("IMG_0500.jpg"), &sample("jpg-exif-mod/image1.JPG")).unwrap();
+
+    // ...but we CARRY a different (parseable) date. If the transfer re-extracted,
+    // the file would land in 2022/08-17 instead.
+    let carried = vec![(
+        candidate.join("IMG_0500.jpg"),
+        CreationDate::DateCreated("2010-05-30 06:59:32".into()),
+    )];
+
+    let outcome = transfer_dated_with_progress(
+        &carried,
+        &root.path().join("library"),
+        "YYYY/MM-DD <folder description>",
+        Operation::Move,
+        &|_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(outcome.copied, 1);
+    assert!(root
+        .path()
+        .join("library/2010/05-30/IMG_0500.jpg")
+        .exists(), "carried date must be used, not re-extracted");
+    assert!(!root
+        .path()
+        .join("library/2022/08-17/IMG_0500.jpg")
+        .exists());
+    assert!(!candidate.join("IMG_0500.jpg").exists()); // moved
+}
+
+#[test]
+fn transfer_falls_back_to_extraction_for_files_without_carried_dates() {
+    use dedupe2::filemover::{transfer_dated_with_progress, Operation};
+    use dedupe2::exif::{creation_date, CreationDate};
+
+    let root = tempfile::tempdir().unwrap();
+    let candidate = root.path().join("candidate");
+    std::fs::create_dir_all(&candidate).unwrap();
+    std::fs::write(candidate.join("dated.jpg"), &sample("jpg-exif-mod/image1.JPG")).unwrap();
+    std::fs::write(candidate.join("undated.jpg"), b"\xFF\xD8 no exif").unwrap();
+
+    // Carry a date only for the first file; the second must fall back to
+    // on-demand extraction (which fails for this garbage jpeg -> skipped).
+    let dated = vec![(
+        candidate.join("dated.jpg"),
+        CreationDate::DateCreated("2013-07-07".into()),
+    )];
+
+    let outcome = transfer_dated_with_progress(
+        &dated,
+        &root.path().join("library"),
+        "YYYY/MM-DD <folder description>",
+        Operation::Move,
+        &|_, _| {},
+    )
+    .unwrap();
+
+    assert_eq!(outcome.copied, 1);
+    // Files absent from the carried list are never processed at all —
+    // they simply stay where they are.
+    assert_eq!(outcome.skipped_no_exif, 0);
+    assert!(root
+        .path()
+        .join("library/2013/07-07 candidate/dated.jpg")
+        .exists());
+    assert!(!candidate.join("dated.jpg").exists()); // moved
+    assert!(candidate.join("undated.jpg").exists()); // skipped, still there
+}

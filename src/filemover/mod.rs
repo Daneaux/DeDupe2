@@ -907,16 +907,34 @@ pub fn transfer_originals_with_progress(
     op: Operation,
     progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> Result<CopyOutcome, FileMoverError> {
+    // No carried dates: extract per file (the slow legacy path).
+    let dated: Vec<(PathBuf, CreationDate)> = originals
+        .iter()
+        .map(|p| (p.clone(), creation_date(p)))
+        .collect();
+    transfer_dated_with_progress(&dated, destination, format, op, progress)
+}
+
+/// Transfer files to their exif-dated folders using **already-resolved**
+/// dates — no per-file exif re-extraction, so same-volume moves are pure
+/// renames. Dates that don't parse (e.g. `unknown`) count as skipped.
+pub fn transfer_dated_with_progress(
+    dated: &[(PathBuf, CreationDate)],
+    destination: &Path,
+    format: &str,
+    op: Operation,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<CopyOutcome, FileMoverError> {
     let mut outcome = CopyOutcome {
         copied: 0,
         skipped_no_exif: 0,
         targets: Vec::new(),
     };
     let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
-    let total = originals.len();
+    let total = dated.len();
 
-    for (i, path) in originals.iter().enumerate() {
-        match destination_for(path, &creation_date(path), destination, format) {
+    for (i, (path, date)) in dated.iter().enumerate() {
+        match destination_for(path, date, destination, format) {
             Some(target) => {
                 let dir = match target.parent() {
                     Some(p) => p.to_path_buf(),

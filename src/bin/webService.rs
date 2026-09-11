@@ -88,6 +88,7 @@ struct CompareExifTemplate {
     destination: String,
     format: String,
     originals_input: String,
+    dates_input: String,
     rows: Vec<ExifRowView>,
     valid_count: usize,
     invalid_count: usize,
@@ -448,7 +449,13 @@ async fn compare_exif(
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
         let dated = scan_exif_with_progress(&originals, &progress);
-        let html = render_compare_exif(&dated, &destination_root, &format, &originals_input);
+        let dates_input = dated
+            .iter()
+            .map(|d| format!("{}\t{}", to_string(&d.path), d.creation_date))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let html =
+            render_compare_exif(&dated, &destination_root, &format, &originals_input, &dates_input);
         let _ = done_tx.send(Msg::Done(html));
     });
 
@@ -506,6 +513,7 @@ fn render_compare_exif(
     destination_root: &str,
     format: &str,
     originals_input: &str,
+    dates_input: &str,
 ) -> String {
     let dest_path = PathBuf::from(destination_root);
     let rows: Vec<ExifRowView> = dated
@@ -534,6 +542,7 @@ fn render_compare_exif(
         destination: destination_root.to_string(),
         format: format.to_string(),
         originals_input: originals_input.to_string(),
+        dates_input: dates_input.to_string(),
         rows,
         valid_count,
         invalid_count,
