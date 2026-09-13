@@ -4,11 +4,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
-use walkdir::WalkDir;
 
 use crate::Scanner::fastScan::hash_image_data_parallel;
 use crate::exif::{creation_date_with_timeout, CreationDate};
-use crate::image_reader::is_supported_image;
+use crate::image_reader::collect_image_files;
 
 #[derive(Debug)]
 pub struct Comparison {
@@ -138,18 +137,6 @@ pub fn scan_exif_with_progress(
             }
         })
         .collect()
-}
-
-fn collect_image_files(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
-    let mut out = Vec::new();
-    for entry in WalkDir::new(dir) {
-        let entry = entry?;
-        if entry.file_type().is_file() && is_supported_image(entry.path()) {
-            out.push(entry.into_path());
-        }
-    }
-    out.sort();
-    Ok(out)
 }
 
 use std::collections::HashSet;
@@ -323,9 +310,11 @@ pub fn deep_scan_pairs(pairs: &[DupPair]) -> DeepScanOutcome {
     deep_scan_pairs_with_progress(pairs, &|_, _| {})
 }
 
-/// Re-verify each duplicate pair: exact bytes or identical decoded pixels mean
-/// a true duplicate; anything else is a false positive. Files that cannot be
-/// decoded are kept as duplicates (they cannot be proven otherwise).
+/// Re-verify each duplicate pair against its full content: exact file bytes,
+/// a complete encoded-image-data hash (all scan data for stills, the whole
+/// `mdat` payload for movies), and finally fully decoded pixels for stills.
+/// Files whose content cannot be read at all stay "kept" as duplicates
+/// (they cannot be proven false positives).
 pub fn deep_scan_pairs_with_progress(
     pairs: &[DupPair],
     progress: &(dyn Fn(usize, usize) + Send + Sync),
@@ -362,7 +351,7 @@ pub fn deep_scan_pairs_with_progress(
 }
 
 fn is_true_duplicate(a: &Path, b: &Path) -> bool {
-    use crate::image_reader::{hash_all_bytes, read_image};
+    use crate::image_reader::{hash_all_bytes, hash_image_data_all, is_video, read_image};
 
     // Exact bytes: trivially duplicates.
     if let (Ok(ha), Ok(hb)) = (hash_all_bytes(a), hash_all_bytes(b)) {
@@ -371,7 +360,24 @@ fn is_true_duplicate(a: &Path, b: &Path) -> bool {
         }
     }
 
-    // Otherwise compare the fully decoded image data.
+    // Full image-content hash: all encoded scan data for stills, the complete
+    // `mdat` payload for movies. Movies have no pixel-decode stage, so for
+    // them this hash is authoritative either way.
+    match (hash_image_data_all(a), hash_image_data_all(b)) {
+        (Ok(ha), Ok(hb)) => {
+            if ha == hb {
+                return true;
+            }
+            if is_video(a) || is_video(b) {
+                return false;
+            }
+        }
+        // Undecodable: cannot prove a false positive.
+        _ => return true,
+    }
+
+    // Stills with different encoded data can still be the same image in a
+    // different format; the final say is identical decoded pixels.
     match (
         catch_unwind(AssertUnwindSafe(|| read_image(a))),
         catch_unwind(AssertUnwindSafe(|| read_image(b))),

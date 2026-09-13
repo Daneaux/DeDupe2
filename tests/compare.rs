@@ -515,3 +515,180 @@ fn transfer_falls_back_to_extraction_for_files_without_carried_dates() {
     assert!(!candidate.join("dated.jpg").exists()); // moved
     assert!(candidate.join("undated.jpg").exists()); // skipped, still there
 }
+
+#[test]
+fn description_tokens_survive_date_substitution() {
+    use dedupe2::filemover::{destination_for, Operation, transfer_dated_with_progress};
+    use dedupe2::exif::CreationDate;
+
+    let root = tempfile::tempdir().unwrap();
+
+    // A folder literally named "MM": its description must stay "MM", not
+    // become the month number.
+    let candidate = root.path().join("candidate/MM");
+    std::fs::create_dir_all(&candidate).unwrap();
+    std::fs::write(candidate.join("x.jpg"), &sample("jpg-exif-mod/image1.JPG")).unwrap();
+
+    let date = CreationDate::DateCreated("2012-08-17 12:00:00".into());
+    let target = destination_for(
+        &candidate.join("x.jpg"),
+        &date,
+        &root.path().join("library"),
+        "YYYY/MM-DD <folder description>",
+    )
+    .unwrap();
+    let target_str = target.display().to_string();
+    assert!(
+        target_str.ends_with("library/2012/08-17 MM/x.jpg"),
+        "description corrupted by token substitution: {target_str}"
+    );
+
+    // And the actual transfer lands there too.
+    let outcome = transfer_dated_with_progress(
+        &[(candidate.join("x.jpg"), date)],
+        &root.path().join("library"),
+        "YYYY/MM-DD <folder description>",
+        Operation::Move,
+        &|_, _| {},
+    )
+    .unwrap();
+    assert_eq!(outcome.copied, 1);
+    assert!(root.path().join("library/2012/08-17 MM/x.jpg").exists());
+}
+
+
+fn boxed(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    let size = (payload.len() as u32) + 8;
+    let mut v = Vec::with_capacity(size as usize);
+    v.extend_from_slice(&size.to_be_bytes());
+    v.extend_from_slice(tag);
+    v.extend_from_slice(payload);
+    v
+}
+
+fn synthetic_mp4(mdat_payload: &[u8]) -> Vec<u8> {
+    let ftyp = boxed(b"ftyp", b"isomisom");
+    let moov = boxed(b"moov", &[0u8; 128]);
+    let mdat = boxed(b"mdat", mdat_payload);
+    [ftyp, moov, mdat].concat()
+}
+
+#[test]
+fn deep_scan_treats_videos_differing_past_the_64kb_head_as_false_positives() {
+    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+
+    let root = tempfile::tempdir().unwrap();
+    let mut common = vec![0xABu8; 70 * 1024];
+
+    let mut a_payload = common.clone();
+    a_payload.extend_from_slice(b"AAAA-tails");
+    let mut b_payload = common;
+    b_payload.extend_from_slice(b"BBBB-tails");
+
+    let a_path = root.path().join("a.mp4");
+    let b_path = root.path().join("b.mp4");
+    fs::write(&a_path, synthetic_mp4(&a_payload)).unwrap();
+    fs::write(&b_path, synthetic_mp4(&b_payload)).unwrap();
+
+    // The two differ only past the first 64kb, so a header scan pairs them.
+    use dedupe2::image_reader::hash_image_data_status;
+    assert_eq!(
+        hash_image_data_status(&a_path, 64 * 1024).0,
+        hash_image_data_status(&b_path, 64 * 1024).0,
+        "fixture should share the 64kb head hash"
+    );
+
+    let outcome = deep_scan_pairs(&[DupPair { a: a_path, b: b_path }]);
+    assert_eq!(outcome.checked, 1);
+    assert_eq!(outcome.kept, 0, "videos with different full payloads are not duplicates");
+    assert_eq!(outcome.removed.len(), 1);
+}
+
+#[test]
+fn deep_scan_keeps_videos_with_identical_content() {
+    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+
+    let root = tempfile::tempdir().unwrap();
+    let payload = [0xCDu8; 80 * 1024];
+    let movie = synthetic_mp4(&payload);
+
+    let a_path = root.path().join("a.mp4");
+    let b_path = root.path().join("b.mov");
+    fs::write(&a_path, &movie).unwrap();
+    fs::write(&b_path, &movie).unwrap();
+
+    let outcome = deep_scan_pairs(&[DupPair { a: a_path, b: b_path }]);
+    assert_eq!(outcome.kept, 1);
+    assert!(outcome.removed.is_empty());
+}
+
+#[test]
+fn deep_scan_keeps_photos_identical_except_metadata() {
+    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+
+    let root = tempfile::tempdir().unwrap();
+    let a_path = root.path().join("a.jpg");
+    let b_path = root.path().join("b.jpg");
+    write(&a_path, "a.jpg", &sample("jpg-exif-mod/image1.JPG"));
+
+    // Same photo; flip one byte inside the EXIF (APP1) segment.
+    let mut bytes = sample("jpg-exif-mod/image1.JPG");
+    let exif = bytes
+        .windows(4)
+        .position(|w| w == b"Exif")
+        .expect("fixture should carry an Exif segment");
+    let flip = exif + 6;
+    assert!(bytes[flip] != 0xFF);
+    bytes[flip] ^= 0x01;
+    write(&b_path, "b.jpg", &bytes);
+
+    let outcome = deep_scan_pairs(&[DupPair { a: a_path, b: b_path }]);
+    assert_eq!(outcome.kept, 1, "metadata-only differences must stay duplicates");
+    assert!(outcome.removed.is_empty());
+}
+
+#[test]
+fn cross_format_pairs_are_never_grouped_as_duplicates() {
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+
+    // Same photo, camera JPEG and its PNG re-encode.
+    let jpg = sample("jpg-exif-mod/image1.JPG");
+    let decoded = image::load_from_memory(&jpg).unwrap();
+    let mut png = Vec::new();
+    decoded
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+
+    write(&a, "photo.jpg", &jpg);
+    write(&b, "photo.png", &png);
+
+    let cmp = compare_folders(&a, &b).unwrap();
+    assert!(
+        cmp.duplicates.is_empty(),
+        "JPEG and PNG of the same photo must NOT pair: found {:?}",
+        cmp.duplicates
+    );
+    assert_eq!(names(&cmp.a_only), vec!["photo.jpg".to_string()]);
+}
+
+#[test]
+fn raw_and_jpg_sidecars_are_never_grouped_as_duplicates() {
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+
+    // The CR2's embedded preview is the same photo as image1.JPG. The RAW's
+    // sensor data must never hash-match the JPEG's scan data.
+    write(&a, "shot.CR2", &sample("canon-raw/CRW_6542.CRW"));
+    write(&b, "shot.jpg", &sample("jpg-exif-mod/image1.JPG"));
+
+    let cmp = compare_folders(&a, &b).unwrap();
+    assert!(
+        cmp.duplicates.is_empty(),
+        "RAW and JPEG sidecars must NOT pair: found {:?}",
+        cmp.duplicates
+    );
+    assert_eq!(names(&cmp.b_only), vec!["shot.jpg".to_string()]);
+}

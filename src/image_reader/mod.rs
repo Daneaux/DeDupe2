@@ -9,12 +9,14 @@ mod movie;
 mod raw;
 mod types;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use walkdir::WalkDir;
 
 pub use bytes::read_bytes;
 pub use hash::{
-    hash_all_bytes, hash_first_n_bytes, hash_image_data, hash_image_data_n,
-    hash_image_data_status,
+    hash_all_bytes, hash_first_n_bytes, hash_image_data, hash_image_data_all,
+    hash_image_data_n, hash_image_data_status,
 };
 pub use types::{ImageData, ImageReaderError, PixelData, ReadLimit};
 
@@ -67,6 +69,28 @@ fn detect_file_type(path: &Path) -> Result<FileType, ImageReaderError> {
 
 /// Whether a path has a supported image extension (jpeg/heic/raw/etc.), and so
 /// should be considered during duplicate scanning and merging.
+/// Recursively list every supported image/video file under `dir`, sorted.
+/// The single definition of "what counts as media" for scans and transfers.
+pub fn collect_image_files(dir: &Path) -> Result<Vec<PathBuf>, ImageReaderError> {
+    let mut out = Vec::new();
+    for entry in WalkDir::new(dir) {
+        let entry = entry.map_err(|e| ImageReaderError::new(e.to_string()))?;
+        if entry.file_type().is_file() && is_supported_image(entry.path()) {
+            out.push(entry.into_path());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Whether a path names a video (has a video extension).
+pub fn is_video(path: &Path) -> bool {
+    matches!(
+        extension_of(path).as_deref(),
+        Some(e) if VIDEO_EXTENSIONS.contains(&e)
+    )
+}
+
 pub fn is_supported_image(path: &Path) -> bool {
     match extension_of(path) {
         Some(ext) => {

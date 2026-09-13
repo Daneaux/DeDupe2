@@ -7,7 +7,9 @@ use walkdir::WalkDir;
 use crate::Scanner::fastScan::hash_image_data_parallel;
 use crate::Scanner::scanner::ScannedFile;
 use crate::exif::{creation_date, CreationDate};
-use crate::image_reader::{hash_all_bytes, hash_image_data, is_supported_image, ReadLimit};
+use crate::image_reader::{
+    collect_image_files, hash_all_bytes, hash_image_data, is_supported_image, ReadLimit,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
@@ -742,7 +744,7 @@ fn consolidate_plan(
 
         let mut files: Vec<(PathBuf, usize)> = Vec::new();
         for (idx, folder) in group.iter().enumerate() {
-            for p in collect_image_files(&folder.path)? {
+            for p in collect_image_files(&folder.path).map_err(|e| FileMoverError::Other(e.to_string()))? {
                 files.push((p, idx));
             }
         }
@@ -847,17 +849,6 @@ fn group_event_folders(dir: &Path) -> Result<Vec<Vec<EventFolder>>, FileMoverErr
     let mut list: Vec<Vec<EventFolder>> = groups.into_values().collect();
     list.sort_by(|a, b| a[0].name.cmp(&b[0].name));
     Ok(list)
-}
-
-fn collect_image_files(dir: &Path) -> Result<Vec<PathBuf>, FileMoverError> {
-    let mut out = Vec::new();
-    for entry in WalkDir::new(dir) {
-        let entry = entry?;
-        if entry.file_type().is_file() && is_supported_image(entry.path()) {
-            out.push(entry.into_path());
-        }
-    }
-    Ok(out)
 }
 
 fn try_remove_empty(dir: &Path) {
@@ -1039,7 +1030,15 @@ pub fn render_date_folder(
     day: u32,
     description: &str,
 ) -> String {
-    let mut out = format.to_string();
+    // Bind the date tokens FIRST, against the raw template only — the
+    // description is spliced in afterwards so its own text can never be
+    // mistaken for a token (a description like "MM" must survive verbatim).
+    let mut out = format
+        .to_string()
+        .replace("YYYY", &format!("{year:04}"))
+        .replace("MM", &format!("{month:02}"))
+        .replace("DD", &format!("{day:02}"));
+
     if description.is_empty() {
         out = out
             .replace("<folder description>", "")
@@ -1061,10 +1060,6 @@ pub fn render_date_folder(
             .replace("<desc>", description)
             .replace("DESC", description);
     }
-    out = out
-        .replace("YYYY", &format!("{year:04}"))
-        .replace("MM", &format!("{month:02}"))
-        .replace("DD", &format!("{day:02}"));
     out
 }
 

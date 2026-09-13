@@ -133,14 +133,21 @@ function computeDestination(sourcePath, dateStr, format, destRoot) {
   const mmdd = folder.match(/^\d{2}-\d{2}\s*(.*)$/);
   const desc = ymd ? (ymd[1] || "").trim() : mmdd ? mmdd[1].trim() : folder.trim();
 
-  let out = format;
+  // Bind the date tokens FIRST (template only), then splice the description
+  // so description text like "MM" can never be rewritten by a token.
+  let out0 = format
+    .replace(/YYYY/g, padNum(y, 4))
+    .replace(/MM/g, padNum(m, 2))
+    .replace(/DD/g, padNum(d, 2));
+
+  let out;
   if (!desc) {
-    out = out.replace(/<folder description>/g, "").replace(/<desc>/g, "").replace(/DESC/g, "");
+    out = out0.replace(/<folder description>/g, "").replace(/<desc>/g, "").replace(/DESC/g, "");
     out = out.split("/").map((s) => s.replace(/^[-_\s]+|[-_\s]+$/g, "").trim()).join("/");
   } else {
-    out = out.replace(/<folder description>/g, desc).replace(/<desc>/g, desc).replace(/DESC/g, desc);
+    out = out0.replace(/<folder description>/g, desc).replace(/<desc>/g, desc).replace(/DESC/g, desc);
   }
-  out = out.replace(/YYYY/g, padNum(y, 4)).replace(/MM/g, padNum(m, 2)).replace(/DD/g, padNum(d, 2));
+
 
   // If the destination root already ends with the year, don't double it.
   const rootSegs = String(destRoot).split("/").filter(Boolean);

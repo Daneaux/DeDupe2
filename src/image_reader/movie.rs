@@ -2,8 +2,9 @@
 //!
 //! The movie content lives in top-level `mdat` boxes; everything else
 //! (`ftyp`, `moov`, metadata atoms) is container structure. Hashing reads the
-//! head of the concatenated `mdat` payload so that metadata-only changes do
-//! not change the hash.
+//! concatenated `mdat` payload so that metadata-only changes do not change
+//! the hash. `hash_mdat` streams the complete (uncapped) payload for deep
+//! scans, while `image_data` caps the fast-scan header hash at 1 MB.
 
 use std::path::Path;
 
@@ -45,6 +46,80 @@ fn extract_mdat(data: &[u8], cap: usize) -> Option<Vec<u8>> {
         None
     } else {
         Some(out[..out.len().min(cap)].to_vec())
+    }
+}
+
+/// Stream the concatenated top-level `mdat` payload (in file order) into a
+/// hash without ever buffering it whole. Used by deep scans so that movies
+/// are compared on their full content, not a 1 MB head.
+pub fn hash_mdat(path: &Path) -> Result<u64, ImageReaderError> {
+    use std::hash::Hasher;
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut f = std::fs::File::open(path).map_err(|e| ImageReaderError::new(e.to_string()))?;
+    let file_len = f
+        .metadata()
+        .map_err(|e| ImageReaderError::new(e.to_string()))?
+        .len();
+
+    let mut hasher = seahash::SeaHasher::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut payload_total: u64 = 0;
+    let mut pos: u64 = 0;
+
+    while pos + 8 <= file_len {
+        let mut hdr = [0u8; 16];
+        f.seek(SeekFrom::Start(pos))
+            .map_err(|e| ImageReaderError::new(e.to_string()))?;
+        f.read_exact(&mut hdr[..8])
+            .map_err(|e| ImageReaderError::new(e.to_string()))?;
+        let size32 = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]);
+        let (header, size) = match size32 {
+            0 => (8u64, file_len - pos), // box extends to EOF
+            1 => {
+                f.read_exact(&mut hdr[8..16])
+                    .map_err(|e| ImageReaderError::new(e.to_string()))?;
+                (16, u64::from_be_bytes([hdr[8], hdr[9], hdr[10], hdr[11], hdr[12], hdr[13], hdr[14], hdr[15]]))
+            }
+            n => (8, n as u64),
+        };
+        if size < header || pos + size > file_len {
+            return Err(ImageReaderError::new(format!(
+                "malformed box at offset {pos}"
+            )));
+        }
+
+        if &hdr[4..8] == b"mdat" {
+            let payload = size - header;
+            f.seek(SeekFrom::Start(pos + header))
+                .map_err(|e| ImageReaderError::new(e.to_string()))?;
+            let mut remaining = payload;
+            while remaining > 0 {
+                let want = (remaining as usize).min(buf.len());
+                let n = f
+                    .read(&mut buf[..want])
+                    .map_err(|e| ImageReaderError::new(e.to_string()))?;
+                if n == 0 {
+                    return Err(ImageReaderError::new(format!(
+                        "unexpected EOF inside mdat at offset {}",
+                        pos + header + payload - remaining
+                    )));
+                }
+                hasher.write(&buf[..n]);
+                remaining -= n as u64;
+            }
+            payload_total += payload;
+        }
+
+        pos += size;
+    }
+
+    if payload_total == 0 {
+        Err(ImageReaderError::new(
+            "could not locate movie data (mdat)",
+        ))
+    } else {
+        Ok(hasher.finish())
     }
 }
 

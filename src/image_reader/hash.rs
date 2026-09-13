@@ -3,9 +3,27 @@ use std::path::Path;
 use super::bytes::read_bytes;
 use super::types::{ImageReaderError, ReadLimit};
 
+/// Hash the whole file by streaming it into the hasher in fixed-size chunks.
+/// Identical to `seahash::hash(&fs::read(path)?)`, but never buffers the file
+/// in memory (matters for multi-GB scans during deep compare/re-home).
 pub fn hash_all_bytes(path: &Path) -> Result<u64, ImageReaderError> {
-    let bytes = read_bytes(path, ReadLimit::All)?;
-    Ok(seahash::hash(&bytes))
+    use std::hash::Hasher;
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).map_err(|e| ImageReaderError::new(e.to_string()))?;
+    let mut hasher = seahash::SeaHasher::new();
+    let mut reader = std::io::BufReader::new(file);
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| ImageReaderError::new(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.write(&buf[..n]);
+    }
+    Ok(hasher.finish())
 }
 
 pub fn hash_first_n_bytes(path: &Path, n: usize) -> Result<u64, ImageReaderError> {
@@ -24,6 +42,16 @@ pub fn hash_image_data(path: &Path, limit: ReadLimit) -> Result<u64, ImageReader
 /// other decode failure.
 pub fn hash_image_data_n(path: &Path, n: usize) -> u64 {
     hash_image_data_status(path, n).0
+}
+
+/// Full encoded-image-data hash for deep scans: complete scan data for stills
+/// (metadata-stripped per format), the full raw decode, and the whole uncapped
+/// `mdat` payload for movies — streamed, never buffered whole.
+pub fn hash_image_data_all(path: &Path) -> Result<u64, ImageReaderError> {
+    match super::detect_file_type(path)? {
+        super::FileType::Movie => super::movie::hash_mdat(path),
+        _ => hash_image_data(path, ReadLimit::All),
+    }
 }
 
 /// Hash plus whether the decoder actually produced the hash (`true`), or the
