@@ -1211,3 +1211,156 @@ pub fn rehome_verified(plans: &[RehomePlan], progress: &(dyn Fn(usize, usize) + 
 
     outcome
 }
+
+#[derive(Debug)]
+pub struct PurgatoryOutcome {
+    pub planned: usize,
+    pub moved: usize,
+    pub renamed_on_collision: usize,
+    /// Files that could not be moved safely, with the reason. The source is
+    /// always left intact for these.
+    pub failures: Vec<(PathBuf, String)>,
+}
+
+/// Move duplicate files out of a tree into a side "purgatory" tree, keeping
+/// each file's path relative to `source_root` under `purgatory_root`. Safe
+/// like `rehome_verified`: copy first, byte-verify, only then remove the
+/// source; collisions auto-rename, never overwrite; failures leave the
+/// source in place. After the moves, every directory under `source_root`
+/// that became empty is removed — `source_root` itself is always kept.
+pub fn move_to_purgatory_with_progress(
+    files: &[PathBuf],
+    source_root: &Path,
+    purgatory_root: &Path,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> PurgatoryOutcome {
+    use crate::image_reader::hash_all_bytes;
+
+    let mut outcome = PurgatoryOutcome {
+        planned: files.len(),
+        moved: 0,
+        renamed_on_collision: 0,
+        failures: Vec::new(),
+    };
+    let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+    let total = files.len();
+
+    for (i, path) in files.iter().enumerate() {
+        progress(i + 1, total);
+
+        let rel = match path.strip_prefix(source_root) {
+            Ok(rel) => rel.to_path_buf(),
+            Err(_) => {
+                outcome.failures.push((
+                    path.clone(),
+                    "file is not inside the candidate tree".into(),
+                ));
+                continue;
+            }
+        };
+
+        let dir = match purgatory_root.join(&rel).parent() {
+            Some(p) => p.to_path_buf(),
+            None => {
+                outcome
+                    .failures
+                    .push((path.clone(), "target has no parent directory".into()));
+                continue;
+            }
+        };
+
+        let filename = file_name(path);
+        let names = taken
+            .entry(dir.clone())
+            .or_insert_with(|| existing_names(&dir));
+        let unique = unique_name(&filename, names);
+        names.insert(unique.to_lowercase());
+        let target = dir.join(&unique);
+
+        if *path == target {
+            outcome.moved += 1;
+            continue;
+        }
+
+        let src_meta = match std::fs::metadata(path) {
+            Ok(m) => m,
+            Err(e) => {
+                outcome
+                    .failures
+                    .push((path.clone(), format!("source not readable: {e}")));
+                continue;
+            }
+        };
+        let src_hash = match hash_all_bytes(path) {
+            Ok(h) => h,
+            Err(e) => {
+                outcome
+                    .failures
+                    .push((path.clone(), format!("source hash failed: {e}")));
+                continue;
+            }
+        };
+
+        if let Some(parent) = target.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                outcome.failures.push((
+                    path.clone(),
+                    format!("cannot create purgatory folder: {e}"),
+                ));
+                continue;
+            }
+        }
+
+        if let Err(e) = std::fs::copy(path, &target) {
+            let _ = std::fs::remove_file(&target);
+            outcome
+                .failures
+                .push((path.clone(), format!("copy failed: {e}")));
+            continue;
+        }
+
+        // Byte-verify the copy before touching the source.
+        let dst_size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+        let verified = dst_size == src_meta.len()
+            && hash_all_bytes(&target).map(|h| h == src_hash).unwrap_or(false);
+
+        if !verified {
+            let _ = std::fs::remove_file(&target);
+            outcome.failures.push((
+                path.clone(),
+                "verification failed: purgatory copy differs".into(),
+            ));
+            continue;
+        }
+
+        if let Err(e) = std::fs::remove_file(path) {
+            outcome.failures.push((
+                target.clone(),
+                format!("copied and verified, but source removal failed (both copies exist): {e}"),
+            ));
+            continue;
+        }
+
+        outcome.moved += 1;
+        if unique != filename {
+            outcome.renamed_on_collision += 1;
+        }
+    }
+
+    prune_empty_children(source_root);
+    outcome
+}
+
+/// Remove directories under `dir` that are empty, bottom-up. `dir` itself is
+/// never removed (only its descendants).
+fn prune_empty_children(dir: &Path) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                prune_empty_children(&p);
+                let _ = std::fs::remove_dir(&p);
+            }
+        }
+    }
+}

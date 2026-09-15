@@ -319,6 +319,9 @@ pub struct DeepScanOutcome {
     /// Shallow pairs that disagreed but whose B is a confirmed duplicate of
     /// some other A file (cross-product leftovers).
     pub covered: usize,
+    /// B-side files of confirmed pairs (deduplicated, sorted) — the ones
+    /// that already exist in A and can be moved out to purgatory.
+    pub confirmed_b: Vec<PathBuf>,
     pub removed: Vec<RemovedPair>,
 }
 
@@ -355,12 +358,15 @@ pub fn deep_scan_pairs_with_progress(
     // fully accounted for; any other pair mentioning that B is a shallow-only
     // link — it must not surface as a false positive (which would demote a
     // true duplicate back into the originals list downstream).
-    let confirmed_b: HashSet<PathBuf> = pairs
+    let mut confirmed_b: Vec<PathBuf> = pairs
         .iter()
         .zip(&verdicts)
         .filter(|(_, reason)| reason.is_none())
         .map(|(pair, _)| pair.b.clone())
         .collect();
+    confirmed_b.sort();
+    confirmed_b.dedup();
+    let confirmed_set: HashSet<&PathBuf> = confirmed_b.iter().collect();
 
     let mut kept = 0usize;
     let mut covered = 0usize;
@@ -369,7 +375,7 @@ pub fn deep_scan_pairs_with_progress(
         match reason {
             None => kept += 1,
             Some(reason) => {
-                if confirmed_b.contains(&pair.b) {
+                if confirmed_set.contains(&pair.b) {
                     // B already proved to exist in A via a different pair.
                     covered += 1;
                     continue;
@@ -393,9 +399,13 @@ pub fn deep_scan_pairs_with_progress(
         checked,
         kept,
         covered,
+        confirmed_b,
         removed,
     }
 }
+
+/// `None` when the pair is a confirmed duplicate; `Some(reason)` when it is
+/// not (the removal reason describes which level of evidence disagreed).
 fn is_true_duplicate(a: &Path, b: &Path) -> Option<String> {
     use crate::image_reader::{hash_all_bytes, hash_image_data_all, is_video, read_image};
 

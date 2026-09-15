@@ -2,6 +2,7 @@
 //! rendering. Pure translation between axum and the library APIs —
 //! exposed as `app()` so handler-level tests can drive the full router.
 
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 
@@ -20,12 +21,12 @@ use crate::Scanner::compare::{
     SetComparison, VerifyOutcome,
 };
 use crate::filemover::{
-    destination_for, plan_rehome, rehome_verified, transfer_originals_with_progress,
-    CopyOutcome, RehomeOutcome,
+    destination_for, move_to_purgatory_with_progress, plan_rehome, rehome_verified,
+    transfer_dated_with_progress, CopyOutcome, RehomeOutcome,
 };
 use std::process::Command;
 
-use crate::exif::CreationDate;
+use crate::exif::{creation_date, CreationDate};
 use crate::filemover::Operation;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -80,9 +81,13 @@ struct CompareResultTemplate {
     b_only_count: usize,
     dup_total: usize,
     dup_pairs_all: String,
+    dup_b_files_all: String,
     unreadable_rows: Vec<PathRowView>,
     unreadable_more: usize,
     unreadable_count: usize,
+    /// Unreadable files sitting in a date-named folder: still placeable, so
+    /// they are folded into the originals list (dated by folder proxy).
+    unreadable_dated_count: usize,
     originals_all: String,
 }
 
@@ -140,6 +145,25 @@ struct VerifyForm {
 }
 
 #[derive(serde::Deserialize)]
+struct PurgatoryForm {
+    files: String,
+    b_root: String,
+    purgatory: String,
+}
+
+#[derive(Template)]
+#[template(path = "purgatory_result.html")]
+struct PurgatoryResultTemplate {
+    purgatory: String,
+    b_root: String,
+    planned: usize,
+    moved: usize,
+    renamed_on_collision: usize,
+    failure_count: usize,
+    failures: Vec<(String, String)>,
+}
+
+#[derive(serde::Deserialize)]
 struct RehomeForm {
     mismatches: String,
     root: String,
@@ -191,6 +215,7 @@ struct DeepForm {
     originals: String,
     destination: Option<String>,
     format: Option<String>,
+    b: Option<String>,
 }
 
 #[derive(Template)]
@@ -205,6 +230,8 @@ struct DeepScanTemplate {
     destination: String,
     format: String,
     valid_count: usize,
+    confirmed_b_input: String,
+    b_root: String,
 }
 
 struct DeepPairView {
@@ -227,6 +254,36 @@ struct CopyForm {
     destination: String,
     format: Option<String>,
     op: Option<String>,
+    /// `path<TAB>date` lines carried from the EXIF scan so the transfer does
+    /// not re-extract metadata for every file.
+    dates: Option<String>,
+}
+
+/// Parse the hidden `dates` field. Returns `path -> date` for dated files and
+/// the set of paths the scan already resolved as `unknown` — those are known,
+/// just undatable, and must NOT trigger a fallback re-extraction (rawler on
+/// each of them is a silent, minutes-long stall before the first copy).
+fn parse_carried_dates(input: &str) -> (HashMap<String, CreationDate>, HashSet<String>) {
+    let mut dated = HashMap::new();
+    let mut unknown = HashSet::new();
+    for line in input.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(2, '\t');
+        let path = parts.next().unwrap_or("").trim();
+        let date = parts.next().unwrap_or("").trim();
+        if path.is_empty() || date.is_empty() {
+            continue;
+        }
+        if date.eq_ignore_ascii_case("unknown") {
+            unknown.insert(path.to_string());
+        } else {
+            dated.insert(path.to_string(), CreationDate::DateCreated(date.to_string()));
+        }
+    }
+    (dated, unknown)
 }
 
 struct PathRowView {
@@ -454,6 +511,7 @@ async fn compare_exif(
         let progress = move |done: usize, total: usize| {
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
+        progress(0, originals.len());
         let dated = scan_exif_with_progress(&originals, &progress);
         let dates_input = dated
             .iter()
@@ -496,11 +554,35 @@ async fn compare_copy(
     let dest_render = destination.clone();
     let format_render = format.clone();
 
+    let (carried, carried_unknown) = parse_carried_dates(form.dates.as_deref().unwrap_or(""));
+
     tokio::task::spawn_blocking(move || {
         let progress = move |done: usize, total: usize| {
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
-        match transfer_originals_with_progress(&originals, &destination, &format, op, &progress) {
+        // Show liveness immediately: the phase label switches from
+        // "Working…" the moment this arrives.
+        progress(0, originals.len());
+
+        // Dates come from the EXIF scan. Files the scan marked `unknown` are
+        // skipped without extraction (they cannot be placed); only paths not
+        // seen by the scan at all (stale page, file added since) are re-read.
+        let dated: Vec<(PathBuf, CreationDate)> = originals
+            .iter()
+            .map(|path| {
+                let key = to_string(path);
+                let date = if let Some(date) = carried.get(&key) {
+                    date.clone()
+                } else if carried_unknown.contains(&key) {
+                    CreationDate::Unknown
+                } else {
+                    creation_date(path)
+                };
+                (path.clone(), date)
+            })
+            .collect();
+
+        match transfer_dated_with_progress(&dated, &destination, &format, op, &progress) {
             Ok(outcome) => {
                 let html = render_compare_copied(&outcome, &dest_render, &format_render);
                 let _ = done_tx.send(Msg::Done(html));
@@ -632,6 +714,13 @@ async fn compare_deep(
         .map(|f| f.trim().to_string())
         .filter(|f| !f.is_empty())
         .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
+    let b_root = form
+        .b
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_default()
+        .to_string();
 
     tracing::info!("deep scan request: {} pairs", pairs.len());
     tracing::debug!("deep pairs:\n{}", form.pairs);
@@ -645,6 +734,7 @@ async fn compare_deep(
         let progress = move |done: usize, total: usize| {
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
+        progress(0, pairs.len());
         let outcome = deep_scan_pairs_with_progress(&pairs, &progress);
 
         // False positives (b side) join the originals list.
@@ -662,7 +752,14 @@ async fn compare_deep(
         let originals_input = originals.join("\n");
         let valid_count = originals.len();
 
-        let html = render_deep_scan(&outcome, &originals_input, &destination, &format, valid_count);
+        let html = render_deep_scan(
+            &outcome,
+            &originals_input,
+            &destination,
+            &format,
+            valid_count,
+            &b_root,
+        );
         let _ = done_tx.send(Msg::Done(html));
     });
 
@@ -675,6 +772,7 @@ fn render_deep_scan(
     destination: &str,
     format: &str,
     valid_count: usize,
+    b_root: &str,
 ) -> String {
     let removed: Vec<DeepPairView> = outcome
         .removed
@@ -686,6 +784,13 @@ fn render_deep_scan(
         })
         .collect();
 
+    let confirmed_b_input = outcome
+        .confirmed_b
+        .iter()
+        .map(|p| to_string(p))
+        .collect::<Vec<_>>()
+        .join("\n");
+
     let tpl = DeepScanTemplate {
         checked: outcome.checked,
         kept: outcome.kept,
@@ -696,6 +801,8 @@ fn render_deep_scan(
         destination: destination.to_string(),
         format: format.to_string(),
         valid_count,
+        confirmed_b_input,
+        b_root: b_root.to_string(),
     };
     tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
 }
@@ -724,6 +831,7 @@ async fn verify_run(
         let progress = move |done: usize, total: usize| {
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
+        progress(0, 0);
         match verify_tree_dates_with_progress(&root, &progress) {
             Ok(outcome) => {
                 let html = render_verify(&outcome, &root_str);
@@ -785,6 +893,65 @@ fn render_verify(outcome: &VerifyOutcome, root: &str) -> String {
     tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
 }
 
+async fn compare_purgatory(
+    Form(form): Form<PurgatoryForm>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
+    let files = parse_paths(&form.files);
+    if files.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "no duplicate files to move".into()));
+    }
+    let purgatory = form.purgatory.trim().to_string();
+    if purgatory.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "provide a purgatory folder".into()));
+    }
+    let b_root = form.b_root.trim().to_string();
+    if b_root.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "candidate tree root is missing".into()));
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+    let progress_tx = tx.clone();
+    let done_tx = tx.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let progress = move |done: usize, total: usize| {
+            let _ = progress_tx.send(Msg::Progress(done, total));
+        };
+        progress(0, files.len());
+        let outcome = move_to_purgatory_with_progress(
+            &files,
+            Path::new(&b_root),
+            Path::new(&purgatory),
+            &progress,
+        );
+        let html = render_purgatory(&outcome, &purgatory, &b_root);
+        let _ = done_tx.send(Msg::Done(html));
+    });
+
+    Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
+}
+
+fn render_purgatory(
+    outcome: &crate::filemover::PurgatoryOutcome,
+    purgatory: &str,
+    b_root: &str,
+) -> String {
+    let tpl = PurgatoryResultTemplate {
+        purgatory: purgatory.to_string(),
+        b_root: b_root.to_string(),
+        planned: outcome.planned,
+        moved: outcome.moved,
+        renamed_on_collision: outcome.renamed_on_collision,
+        failure_count: outcome.failures.len(),
+        failures: outcome
+            .failures
+            .iter()
+            .map(|(p, r)| (to_string(p), r.clone()))
+            .collect(),
+    };
+    tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
+}
+
 async fn verify_rehome(
     Form(form): Form<RehomeForm>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
@@ -822,6 +989,7 @@ async fn verify_rehome(
         let progress = move |done: usize, total: usize| {
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
+        progress(0, mismatches.len());
         let plans = plan_rehome(&mismatches, &root, &format);
         let outcome = rehome_verified(&plans, &progress);
 
@@ -989,10 +1157,28 @@ fn render_compare(cmp: &Comparison, a: &str, b: &str) -> String {
         .collect();
     let (unreadable_rows, unreadable_more) = truncate_rows(unreadable_rows);
 
-    let originals_all = cmp
-        .b_only
+    // Unreadable files (decoder failed on both extension and content sniff)
+    // that live in a date-named folder are still placeable: the folder proxy
+    // gives them a date, so they join the originals and flow through the
+    // EXIF scan like everything else. Without a folder date they stay out.
+    let mut originals: Vec<String> = cmp.b_only.iter().map(|p| to_string(p)).collect();
+    let mut unreadable_dated_count = 0usize;
+    for p in &cmp.unreadable {
+        if crate::exif::folder_proxy_date(p).is_some() {
+            originals.push(to_string(p));
+            unreadable_dated_count += 1;
+        }
+    }
+    originals.sort();
+    originals.dedup();
+    let originals_all = originals.join("\n");
+
+    // Every B-side file in a shallow duplicate group — the purge candidates
+    // (deep scan narrows this to confirmed duplicates).
+    let dup_b_files_all = cmp
+        .duplicates
         .iter()
-        .map(|p| to_string(p))
+        .flat_map(|g| g.b.iter().map(|p| to_string(p)))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -1009,9 +1195,11 @@ fn render_compare(cmp: &Comparison, a: &str, b: &str) -> String {
         b_only_count: cmp.b_only.len(),
         dup_total,
         dup_pairs_all,
+        dup_b_files_all,
         unreadable_rows,
         unreadable_more,
         unreadable_count: cmp.unreadable.len(),
+        unreadable_dated_count,
         originals_all,
     };
     tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
@@ -1081,6 +1269,7 @@ pub fn app() -> Router {
         .route("/verify", get(verify_form))
         .route("/verify/run", post(verify_run))
         .route("/verify/rehome", post(verify_rehome))
+        .route("/compare/purgatory", post(compare_purgatory))
         .nest_service("/static", ServeDir::new("static"))
         // Compare forms post the full originals list back to the server (one
         // path per line) — several MB for large candidate trees. NOTE: this

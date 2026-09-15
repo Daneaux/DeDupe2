@@ -459,3 +459,243 @@ fn raster_bmp_hashes_decoded_pixels() {
     assert_eq!(decoded.width, 16);
     assert_eq!(decoded.height, 16);
 }
+
+/// Minimal M2TS (AVCHD) bytes: 192-byte packets, each a 4-byte arrival
+/// timestamp followed by 0x47 and 187 payload bytes.
+fn synthesize_m2ts(content: &[u8], timestamp_base: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut ts = timestamp_base;
+    for (i, chunk) in content.chunks(187).enumerate() {
+        out.extend_from_slice(&ts.to_be_bytes());
+        out.push(0x47);
+        out.extend_from_slice(chunk);
+        for _ in chunk.len()..187 {
+            out.push(0);
+        }
+        ts += 1000 + i as u32;
+    }
+    out
+}
+
+#[test]
+fn m2ts_hash_ignores_arrival_timestamps() {
+    let dir = tempfile::tempdir().unwrap();
+    let content = movie_payload(40_000);
+
+    // Same stream content, different arrival timestamps per packet.
+    let a = dir.path().join("a.mts");
+    let b = dir.path().join("b.mts");
+    fs::write(&a, synthesize_m2ts(&content, 0)).unwrap();
+    fs::write(&b, synthesize_m2ts(&content, 999_999)).unwrap();
+
+    let (ha, oka) = dedupe2::image_reader::hash_image_data_status(&a, 64 * 1024);
+    let (hb, okb) = dedupe2::image_reader::hash_image_data_status(&b, 64 * 1024);
+    assert!(oka && okb, "m2ts must decode ({oka}, {okb})");
+    assert_eq!(ha, hb, "arrival timestamps are container bookkeeping");
+
+    let fa = dedupe2::image_reader::hash_image_data_all(&a).unwrap();
+    let fb = dedupe2::image_reader::hash_image_data_all(&b).unwrap();
+    assert_eq!(fa, fb, "full payload hash must ignore timestamps too");
+}
+
+#[test]
+fn m2ts_with_different_content_hashes_differ() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.mts");
+    let b = dir.path().join("b.mts");
+    fs::write(&a, synthesize_m2ts(&movie_payload(10_000), 0)).unwrap();
+    fs::write(&b, synthesize_m2ts(&movie_payload(10_000).iter().map(|x| x ^ 0xFF).collect::<Vec<_>>(), 0)).unwrap();
+
+    assert_ne!(
+        dedupe2::image_reader::hash_image_data_all(&a).unwrap(),
+        dedupe2::image_reader::hash_image_data_all(&b).unwrap()
+    );
+}
+
+#[test]
+fn m2ts_payload_skips_packet_headers() {
+    let dir = tempfile::tempdir().unwrap();
+    let content = movie_payload(187 * 3);
+    let path = dir.path().join("clip.mts");
+    fs::write(&path, synthesize_m2ts(&content, 123)).unwrap();
+
+    let data = read_image_data(&path, ReadLimit::First(64 * 1024)).unwrap();
+    // Three packets of 187 payload bytes, no 4-byte timestamps, no 0x47.
+    assert_eq!(data.len(), 187 * 3);
+    assert_eq!(data, content);
+}
+
+#[test]
+fn mts_is_a_supported_video_extension() {
+    assert!(dedupe2::image_reader::is_supported_image(Path::new("clip.mts")));
+    assert!(dedupe2::image_reader::is_supported_image(Path::new("clip.MTS")));
+    assert!(dedupe2::image_reader::is_supported_image(Path::new("clip.m2ts")));
+    assert!(dedupe2::image_reader::is_video(Path::new("clip.mts")));
+    assert!(!dedupe2::image_reader::is_video(Path::new("clip.jpg")));
+}
+
+#[test]
+fn non_mpegts_file_named_mts_is_unreadable_not_fatal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fake.mts");
+    fs::write(&path, b"definitely not a transport stream, just text").unwrap();
+
+    let (_, decoded) = dedupe2::image_reader::hash_image_data_status(&path, 64 * 1024);
+    assert!(!decoded, "mislabeled file falls back to a raw-bytes hash");
+}
+
+#[test]
+fn jpeg_content_named_mov_is_rescued_by_content_sniffing() {
+    let dir = tempfile::tempdir().unwrap();
+    let jpeg = fs::read(jpg_sample()).unwrap();
+
+    let as_jpg = dir.path().join("photo.jpg");
+    let as_mov = dir.path().join("photo.mov");
+    fs::write(&as_jpg, &jpeg).unwrap();
+    fs::write(&as_mov, &jpeg).unwrap();
+
+    let (ha, ok_a) = dedupe2::image_reader::hash_image_data_status(&as_jpg, 64 * 1024);
+    let (hb, ok_b) = dedupe2::image_reader::hash_image_data_status(&as_mov, 64 * 1024);
+    assert!(ok_a && ok_b, "both must decode ({ok_a}, {ok_b})");
+    assert_eq!(ha, hb, "a mislabeled copy must hash like its true format");
+}
+
+#[test]
+fn png_content_named_jpg_is_rescued_by_content_sniffing() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/png/IMG_5526.PNG"),
+    )
+    .unwrap();
+
+    let as_png = dir.path().join("image.png");
+    let as_jpg = dir.path().join("image.jpg");
+    fs::write(&as_png, &png).unwrap();
+    fs::write(&as_jpg, &png).unwrap();
+
+    let (ha, ok_a) = dedupe2::image_reader::hash_image_data_status(&as_png, 64 * 1024);
+    let (hb, ok_b) = dedupe2::image_reader::hash_image_data_status(&as_jpg, 64 * 1024);
+    assert!(ok_a && ok_b, "both must decode ({ok_a}, {ok_b})");
+    assert_eq!(ha, hb);
+}
+
+#[test]
+fn m2ts_content_named_mov_is_rescued_by_content_sniffing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("clip.mov");
+    fs::write(&path, synthesize_m2ts(&movie_payload(20_000), 0)).unwrap();
+
+    let (_, decoded) = dedupe2::image_reader::hash_image_data_status(&path, 64 * 1024);
+    assert!(decoded, "transport stream content is recognized regardless of name");
+
+    let full = dedupe2::image_reader::hash_image_data_all(&path).unwrap();
+    let twin = dir.path().join("clip.mts");
+    fs::write(&twin, synthesize_m2ts(&movie_payload(20_000), 0)).unwrap();
+    assert_eq!(full, dedupe2::image_reader::hash_image_data_all(&twin).unwrap());
+}
+
+#[test]
+fn garbage_named_mov_stays_unreadable() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("garbage.mov");
+    fs::write(&path, b"not any known container format at all").unwrap();
+
+    let (_, decoded) = dedupe2::image_reader::hash_image_data_status(&path, 64 * 1024);
+    assert!(!decoded);
+}
+
+/// RIFF chunk: id + little-endian size + payload + pad byte when odd.
+fn riff_chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    let mut v = Vec::new();
+    v.extend_from_slice(id);
+    v.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    v.extend_from_slice(payload);
+    if payload.len() % 2 == 1 {
+        v.push(0);
+    }
+    v
+}
+
+/// Minimal AVI: RIFF header + LIST hdrl (with IDIT metadata) + LIST movi
+/// (content) + idx1 index.
+fn synthesize_avi(movi: &[u8], idit: &[u8]) -> Vec<u8> {
+    let hdrl = riff_chunk(b"LIST", &[b"hdrl".as_slice(), &riff_chunk(b"IDIT", idit)].concat());
+    let movi_list = riff_chunk(b"LIST", &[b"movi".as_slice(), movi].concat());
+    let idx1 = riff_chunk(b"idx1", &[0u8; 16]);
+    let body = [hdrl, movi_list, idx1].concat();
+
+    let mut v = Vec::new();
+    v.extend_from_slice(b"RIFF");
+    v.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    v.extend_from_slice(b"AVI ");
+    v.extend_from_slice(&body);
+    v
+}
+
+#[test]
+fn avi_hash_ignores_metadata_outside_movi() {
+    let dir = tempfile::tempdir().unwrap();
+    let content = movie_payload(30_000);
+
+    let a = dir.path().join("a.avi");
+    let b = dir.path().join("b.avi");
+    fs::write(&a, synthesize_avi(&content, b"2006:07:15 10:49:34")).unwrap();
+    fs::write(&b, synthesize_avi(&content, b"2011:11:11 11:11:11")).unwrap();
+
+    let (ha, oka) = dedupe2::image_reader::hash_image_data_status(&a, 64 * 1024);
+    let (hb, okb) = dedupe2::image_reader::hash_image_data_status(&b, 64 * 1024);
+    assert!(oka && okb, "avi must decode ({oka}, {okb})");
+    assert_eq!(ha, hb, "IDIT metadata must not affect the shallow hash");
+
+    assert_eq!(
+        dedupe2::image_reader::hash_image_data_all(&a).unwrap(),
+        dedupe2::image_reader::hash_image_data_all(&b).unwrap(),
+        "full movi payloads are equal"
+    );
+}
+
+#[test]
+fn avi_with_different_content_hashes_differ() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.avi");
+    let b = dir.path().join("b.avi");
+    fs::write(&a, synthesize_avi(&movie_payload(10_000), b"same")).unwrap();
+    fs::write(
+        &b,
+        synthesize_avi(
+            &movie_payload(10_000).iter().map(|x| x ^ 0xFF).collect::<Vec<_>>(),
+            b"same",
+        ),
+    )
+    .unwrap();
+
+    assert_ne!(
+        dedupe2::image_reader::hash_image_data_all(&a).unwrap(),
+        dedupe2::image_reader::hash_image_data_all(&b).unwrap()
+    );
+}
+
+#[test]
+fn avi_payload_read_returns_movi_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let content = movie_payload(5_000);
+    let path = dir.path().join("clip.avi");
+    fs::write(&path, synthesize_avi(&content, b"x")).unwrap();
+
+    let data = read_image_data(&path, ReadLimit::First(64 * 1024)).unwrap();
+    assert_eq!(data, content);
+}
+
+#[test]
+fn avi_extension_is_supported_and_content_sniffed() {
+    assert!(dedupe2::image_reader::is_supported_image(Path::new("clip.avi")));
+    assert!(dedupe2::image_reader::is_supported_image(Path::new("clip.AVI")));
+    assert!(dedupe2::image_reader::is_video(Path::new("clip.avi")));
+
+    // Mislabeled: AVI content under a .mov name must also decode.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("clip.mov");
+    fs::write(&path, synthesize_avi(&movie_payload(8_000), b"x")).unwrap();
+    let (_, decoded) = dedupe2::image_reader::hash_image_data_status(&path, 64 * 1024);
+    assert!(decoded);
+}

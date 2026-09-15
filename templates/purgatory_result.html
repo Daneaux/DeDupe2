@@ -1,0 +1,50 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Moved to Purgatory</h2>
+      <span class="subtitle">{{ b_root }} &rarr; {{ purgatory }} · copy &rarr; verify &rarr; remove. Sources removed only after byte-verification; now-empty folders pruned.</span>
+    </div>
+  </div>
+
+  <div class="merge-summary">
+    <div class="summary-stat">
+      <span class="summary-value">{{ moved }}</span>
+      <span class="summary-label">moved of {{ planned }}</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ renamed_on_collision }}</span>
+      <span class="summary-label">renamed (name collision)</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ failure_count }}</span>
+      <span class="summary-label">failures (left in place)</span>
+    </div>
+  </div>
+
+  {% if failure_count > 0 %}
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Failures</span>
+      <span class="badge badge-dirty">{{ failure_count }}</span>
+      <span class="collection-sub">these files were left in the candidate tree</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Path</th><th>Reason</th></tr></thead>
+        <tbody>
+          {% for f in failures %}
+          <tr class="row-b">
+            <td class="path clickable" data-reveal="{{ f.0 }}">{{ f.0 }}</td>
+            <td class="muted">{{ f.1 }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+  {% endif %}
+
+  <div class="toolbar-actions">
+    <a class="btn btn-secondary" href="/compare">Back to compare</a>
+  </div>
+</section>

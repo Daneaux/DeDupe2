@@ -106,9 +106,9 @@ fn creation_date_readers(path: &Path) -> CreationDate {
         return date;
     }
 
-    // MP4/MOV are nom-exif's domain; rawler's bmff decoder is for CR3 and
-    // gains nothing here, so don't fall back into it for movie files.
-    let movie = is_movie_ext(path);
+    // MP4/MOV/MTS are nom-exif's (and later exiftool's) domain; rawler's
+    // movie decoders gain nothing here, so don't fall back into them.
+    let movie = crate::image_reader::is_video(path);
     if !movie {
         let from_rawler = raw_creation_date(path);
         if from_rawler != CreationDate::Unknown {
@@ -388,11 +388,19 @@ pub fn creation_dates_batch(
     progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> Vec<CreationDate> {
     use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let total = paths.len();
+    let done = AtomicUsize::new(0);
     let mut dates: Vec<CreationDate> = paths
         .par_iter()
-        .map(|path| date_with_timeout(path, EXIF_TIMEOUT, creation_date_readers, CreationDate::Unknown))
+        .map(|path| {
+            let date = date_with_timeout(path, EXIF_TIMEOUT, creation_date_readers, CreationDate::Unknown);
+            // Report as each file resolves so the UI moves during the (slow)
+            // reader pass — not only after the whole pass has finished.
+            progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
+            date
+        })
         .collect();
 
     let mut unresolved: Vec<usize> = Vec::new();
@@ -400,7 +408,6 @@ pub fn creation_dates_batch(
         if *date == CreationDate::Unknown {
             unresolved.push(i);
         }
-        progress(i + 1, total);
     }
 
     if !unresolved.is_empty() {
@@ -517,28 +524,60 @@ fn exiftool_dates_batch(paths: &[PathBuf]) -> Result<HashMap<PathBuf, CreationDa
 /// fields (`TimeCreated` / `DigitalCreationTime`) complete the stamp when
 /// present. Public so tests can exercise it without an exiftool binary.
 pub fn pick_exiftool_date(row: &serde_json::Value) -> Option<CreationDate> {
-    const PRIORITY: &[(&str, &str)] = &[
-        ("ExifIFD:DateTimeOriginal", ""),
-        ("Composite:DateTimeCreated", ""),
-        ("DateTimeOriginal", ""),
-        ("XMP:CreateDate", ""),
-        ("Composite:CreateDate", ""),
-        ("IPTC:DateCreated", "IPTC:TimeCreated"),
-        ("IPTC:DigitalCreationDate", "IPTC:DigitalCreationTime"),
-        ("CreateDate", ""),
+    // Tag names in priority order (closest to "when the shutter fired"
+    // first), matched regardless of exiftool's group prefix so QuickTime,
+    // M2TS, XMP, ExifIFD, Composite and IPTC records are all eligible.
+    const NAME_PRIORITY: &[&str] = &[
+        "DateTimeOriginal",
+        "DateTimeCreated",
+        "CreateDate",
+        "DateCreated",
+        "DigitalCreationDate",
+    ];
+    // For equal tag names, prefer the group closer to the camera.
+    const GROUP_PREFERENCE: &[&str] = &[
+        "ExifIFD:", "XMP:", "Composite:", "QuickTime:", "Track:", "M2TS:", "IPTC:",
     ];
 
-    for (key, time_key) in PRIORITY {
-        let Some(raw) = row.get(*key).and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let time = if time_key.is_empty() {
-            None
-        } else {
-            row.get(*time_key).and_then(|v| v.as_str())
-        };
-        if let Some(date) = exiftool_timestamp(raw, time) {
-            return Some(date);
+    let obj = row.as_object()?;
+    let tag_name = |key: &str| key.rsplit(':').next().unwrap_or(key).to_string();
+    let group_rank = |key: &str| {
+        GROUP_PREFERENCE
+            .iter()
+            .position(|g| key.starts_with(g))
+            .unwrap_or(GROUP_PREFERENCE.len())
+    };
+
+    for name in NAME_PRIORITY {
+        let mut keys: Vec<&String> = obj
+            .keys()
+            .filter(|k| {
+                tag_name(k) == *name
+                    && obj.get(k.as_str()).map(|v| v.is_string()).unwrap_or(false)
+            })
+            .collect();
+        keys.sort_by_key(|k| (group_rank(k), k.as_str()));
+
+        for key in keys {
+            let Some(raw) = obj.get(key.as_str()).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            // IPTC date-only tags carry the clock in a companion field.
+            let companion = if *name == "DateCreated" {
+                Some("TimeCreated")
+            } else if *name == "DigitalCreationDate" {
+                Some("DigitalCreationTime")
+            } else {
+                None
+            };
+            let time = companion.and_then(|companion| {
+                let prefix = key.rsplit_once(':').map(|(p, _)| p.to_string())?;
+                let full_key = format!("{prefix}:{companion}");
+                obj.get(full_key.as_str()).and_then(|v| v.as_str())
+            });
+            if let Some(date) = exiftool_timestamp(raw, time) {
+                return Some(date);
+            }
         }
     }
     None
@@ -602,13 +641,6 @@ fn exiftool_timestamp(raw: &str, time: Option<&str>) -> Option<CreationDate> {
 }
 
 
-fn is_movie_ext(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some(ext) if matches!(ext.to_ascii_lowercase().as_str(), "mp4" | "mov" | "m4v")
-    )
-}
-
 /// Pick the capture date from rawler's parsed EXIF fields, in priority
 /// order: DateTimeOriginal (when the shutter fired) > CreateDate > ModifyDate
 /// (the file-change date, which can be arbitrarily recent and wrong).
@@ -635,7 +667,15 @@ pub fn select_capture_date(exif: &rawler::exif::Exif) -> Option<CreationDate> {
     None
 }
 
+/// rawler can panic on corrupt/mislabeled raw files (it slices at offsets
+/// read from the file), so the whole decode is unwound per file and treated
+/// like any other unreadable file.
 fn raw_creation_date(path: &Path) -> CreationDate {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| raw_creation_date_inner(path)))
+        .unwrap_or(CreationDate::Unknown)
+}
+
+fn raw_creation_date_inner(path: &Path) -> CreationDate {
     let rawfile = match rawler::rawsource::RawSource::new(path) {
         Ok(rawfile) => rawfile,
         Err(_) => return CreationDate::Unknown,

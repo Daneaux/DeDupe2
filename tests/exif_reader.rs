@@ -414,3 +414,125 @@ fn exiftool_batch_maps_multiple_files_in_one_run() {
     assert_eq!(dates[1], CreationDate::DateCreated("2014-12-31".into()));
     assert_eq!(dates[2], CreationDate::DateCreated("2013-07-07".into()));
 }
+
+#[test]
+fn exiftool_reads_quicktime_creatdate_from_mts() {
+    let row = serde_json::json!({
+        "SourceFile": "/x/clip.mts",
+        "M2TS:CreateDate": "2014:06:01 12:34:56",
+    });
+    assert_eq!(
+        pick_exiftool_date(&row),
+        Some(CreationDate::DateCreated("2014-06-01 12:34:56".into()))
+    );
+
+    let row = serde_json::json!({
+        "SourceFile": "/x/clip.mp4",
+        "QuickTime:CreateDate": "2015-02-03T04:05:06",
+    });
+    assert_eq!(
+        pick_exiftool_date(&row),
+        Some(CreationDate::DateCreated("2015-02-03 04:05:06".into()))
+    );
+}
+
+#[test]
+fn exiftool_prefers_exiftag_group_for_equal_tag_names() {
+    let row = serde_json::json!({
+        "QuickTime:CreateDate": "2015-02-03T04:05:06",
+        "XMP:CreateDate": "2016-03-04T05:06:07",
+    });
+    assert_eq!(
+        pick_exiftool_date(&row),
+        Some(CreationDate::DateCreated("2016-03-04 05:06:07".into())),
+        "XMP ranks above QuickTime for the same tag name"
+    );
+}
+
+/// Environment-specific: a real AVCHD `.MTS` clip whose only date tag is the
+/// H.264 stream's DateTimeOriginal (`2010:09:28 12:54:38+01:00`) — readable
+/// only through the batched exiftool fallback; also proves it participates in
+/// scanning (decodes instead of landing in the unreadable list). Ignored by
+/// default.
+#[test]
+#[ignore]
+fn reads_avchd_mts_date_via_exiftool() {
+    let path = Path::new(
+        "/Users/dannydalal/4tbext/SrcImageFolders/Single Events/Original 2000-2019/2010/2010-09  Paris Turkey Lebanon Boston/2010-09-28/00000.MTS",
+    );
+    if !path.exists() {
+        return;
+    }
+
+    let (_, decoded) = dedupe2::image_reader::hash_image_data_status(path, 64 * 1024);
+    assert!(decoded, "mts must decode for scan/compare");
+
+    let dates = creation_dates_batch(&[path.to_path_buf()], &|_, _| {});
+    assert_eq!(
+        dates[0],
+        CreationDate::DateCreated("2010-09-28 12:54:38".into())
+    );
+}
+
+#[test]
+fn creation_dates_batch_reports_progress_for_every_file() {
+    use std::sync::Mutex;
+
+    let root = tempfile::tempdir().unwrap();
+    let mut paths = Vec::new();
+    for i in 0..6 {
+        let p = root.path().join(format!("file{i}.jpg"));
+        std::fs::write(&p, b"not really an image").unwrap();
+        paths.push(p);
+    }
+
+    let ticks: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    let totals: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    let dates = creation_dates_batch(&paths, &|done, total| {
+        ticks.lock().unwrap().push(done);
+        totals.lock().unwrap().push(total);
+    });
+    assert_eq!(dates.len(), paths.len());
+
+    let mut seen = ticks.into_inner().unwrap();
+    seen.sort();
+    assert_eq!(
+        seen,
+        (1..=paths.len()).collect::<Vec<_>>(),
+        "every file must tick exactly once"
+    );
+    assert!(totals.into_inner().unwrap().iter().all(|&t| t == paths.len()));
+}
+
+#[test]
+fn exiftool_reads_riff_datetimeoriginal_from_avi() {
+    let row = serde_json::json!({
+        "SourceFile": "/x/clip.avi",
+        "RIFF:DateTimeOriginal": "2006:07:15 10:49:34",
+    });
+    assert_eq!(
+        pick_exiftool_date(&row),
+        Some(CreationDate::DateCreated("2006-07-15 10:49:34".into()))
+    );
+}
+
+/// Environment-specific: a real Canon AVI whose only date is the RIFF
+/// DateTimeOriginal. Ignored by default.
+#[test]
+#[ignore]
+fn reads_real_avi_date_via_exiftool() {
+    let path = Path::new(
+        "/Users/dannydalal/4tbext/SrcImageFolders/Single Events/Original 2000-2019/photography/pics to organize/beeenie/149CANON/MVI_4987.AVI",
+    );
+    if !path.exists() {
+        return;
+    }
+    let (_, decoded) = dedupe2::image_reader::hash_image_data_status(path, 64 * 1024);
+    assert!(decoded, "avi must decode for scan/compare");
+
+    let dates = creation_dates_batch(&[path.to_path_buf()], &|_, _| {});
+    assert_eq!(
+        dates[0],
+        CreationDate::DateCreated("2006-07-15 10:49:34".into())
+    );
+}

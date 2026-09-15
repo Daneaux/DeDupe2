@@ -39,9 +39,22 @@
         <input type="hidden" name="pairs" value="{{ dup_pairs_all }}" />
         <input type="hidden" name="originals" value="{{ originals_all }}" />
         <input type="hidden" name="destination" value="{{ a }}" />
+        <input type="hidden" name="b" value="{{ b }}" />
         <button type="submit" class="btn btn-small btn-secondary">Deep scan</button>
       </form>
     </div>
+    <form method="post" action="/compare/purgatory" id="purgatory-form" class="merge-form">
+      <input type="hidden" name="files" value="{{ dup_b_files_all }}" />
+      <input type="hidden" name="b_root" value="{{ b }}" />
+      <label class="field">
+        <span>Purgatory folder</span>
+        <input type="text" name="purgatory" placeholder="/path/to/purgatory" />
+        <span class="hint">Moves every B-side duplicate out of the candidate tree, keeping its folder layout. Copy &rarr; byte-verify &rarr; remove; collisions renamed; empty folders pruned.</span>
+      </label>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-small btn-secondary" {% if dup_total == 0 %}disabled{% endif %}>Move duplicates to purgatory</button>
+      </div>
+    </form>
     <div class="table-scroll">
       <table class="compare-table">
         <thead><tr><th>Tree</th><th>Path</th></tr></thead>
@@ -67,7 +80,7 @@
     <div class="collection-head">
       <span class="collection-title">Originals</span>
       <span class="badge badge-ok">{{ b_only_count }}</span>
-      <span class="collection-sub">photos only in B</span>
+      <span class="collection-sub">photos only in B{% if unreadable_dated_count > 0 %} &middot; {{ unreadable_dated_count }} unreadable file(s) dated from their folder{% endif %}</span>
       <form method="post" action="/compare/exif" id="compare-exif-form" class="merge-form">
         <input type="hidden" name="originals" value="{{ originals_all }}" />
         <input type="hidden" name="a" value="{{ a }}" />

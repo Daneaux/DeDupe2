@@ -63,6 +63,9 @@
     } else if (form.id === "compare-deep-form") {
       url = "/compare/deep";
       phaseLabel = "Deep scan";
+    } else if (form.id === "purgatory-form") {
+      url = "/compare/purgatory";
+      phaseLabel = "Moving";
     } else if (form.id === "verify-form") {
       url = "/verify/run";
       phaseLabel = "Verifying";

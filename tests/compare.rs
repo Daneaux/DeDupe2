@@ -760,7 +760,12 @@ fn fixed_0857_pair_shallow_then_full_hash_confirmed() {
         "/Users/dannydalal/4tbext/SrcImageFolders/Single Events/Original 2000-2019/2013/2013-07-30/IMG_0857.MOV",
     );
     let b = std::path::Path::new("/Users/dannydalal/4tbext/AllPhotos/2013/07-30/IMG_0857.MOV");
-    assert!(a.exists() && b.exists(), "library files missing — skip");
+    if !(a.exists() && b.exists()) {
+        // These paths follow the library owner's organization workflow (the
+        // copy may have been purged/renamed since the bug report).
+        eprintln!("library files missing — skip");
+        return;
+    }
 
     // Layer 1: shallow 64kb image-data hash — what paired them in the UI.
     let (sha, sa_ok) = hash_image_data_status(a, 64 * 1024);
@@ -888,4 +893,115 @@ fn deep_scan_keeps_false_positive_rows_for_b_matching_nothing_even_with_confirme
         "b2.mp4",
         "only the genuinely unmatched B may surface: {outcome:?}"
     );
+}
+
+/// Minimal M2TS (AVCHD): 192-byte packets = 4-byte arrival timestamp +
+/// 0x47 sync + 187 content bytes.
+fn synthesize_m2ts(content: &[u8], timestamp_base: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut ts = timestamp_base;
+    for (i, chunk) in content.chunks(187).enumerate() {
+        out.extend_from_slice(&ts.to_be_bytes());
+        out.push(0x47);
+        out.extend_from_slice(chunk);
+        for _ in chunk.len()..187 {
+            out.push(0);
+        }
+        ts += 1000 + i as u32;
+    }
+    out
+}
+
+#[test]
+fn mts_files_are_scanned_compared_and_deep_scanned() {
+    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+
+    // Same clip, copy in each tree — different arrival timestamps.
+    let content: Vec<u8> = (0..60_000u32).map(|i| ((i * 7 + 3) % 251) as u8).collect();
+    write(&a, "clip.mts", &synthesize_m2ts(&content, 0));
+    write(&b, "clip.mts", &synthesize_m2ts(&content, 500_000));
+
+    // Shallow scan: found as duplicates despite different packet timestamps.
+    let cmp = compare_folders(&a, &b).unwrap();
+    assert_eq!(cmp.duplicates.len(), 1, "mts must participate in compare");
+    assert!(cmp.unreadable.is_empty(), "mts must decode, not be unreadable");
+
+    let group = &cmp.duplicates[0];
+    let outcome = deep_scan_pairs(&[DupPair {
+        a: group.a[0].clone(),
+        b: group.b[0].clone(),
+    }]);
+    assert_eq!(outcome.kept, 1, "timestamp-only differences stay duplicates");
+    assert!(outcome.removed.is_empty());
+}
+
+#[test]
+fn mislabeled_jpeg_named_mov_still_pairs_with_its_jpg_twin() {
+    // The real-world case: the same photo exists as photo.jpg in A and as a
+    // .MOV-mislabeled copy in B. Content sniffing must hash both identically
+    // so the compare finds the duplicate instead of listing it unreadable.
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    let jpeg = sample("jpg-exif-mod/image1.JPG");
+
+    write(&a, "photo.jpg", &jpeg);
+    write(&b, "photo.mov", &jpeg);
+
+    let cmp = compare_folders(&a, &b).unwrap();
+    assert_eq!(cmp.duplicates.len(), 1, "mislabeled twin must pair: {cmp:?}");
+    assert!(cmp.unreadable.is_empty(), "must not be unreadable: {:?}", cmp.unreadable);
+}
+
+#[test]
+fn avi_copies_pair_across_trees_despite_metadata_differences() {
+    // Same recorded content; different INFO/IDIT metadata. They must still be
+    // found as duplicates (movi payload hashing) and stay confirmed in the
+    // deep scan (byte-level differences do not matter for the content hash).
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    let content = (0..40_000u32).map(|i| ((i * 5 + 1) % 253) as u8).collect::<Vec<_>>();
+
+    write(&a, "clip.avi", &synthesize_avi(&content, b"2006:07:15 10:49:34"));
+    write(&b, "clip.avi", &synthesize_avi(&content, b"2007:01:01 00:00:00"));
+
+    let cmp = compare_folders(&a, &b).unwrap();
+    assert_eq!(cmp.duplicates.len(), 1, "avi must pair: {cmp:?}");
+    assert!(cmp.unreadable.is_empty());
+
+    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    let group = &cmp.duplicates[0];
+    let outcome = deep_scan_pairs(&[DupPair {
+        a: group.a[0].clone(),
+        b: group.b[0].clone(),
+    }]);
+    assert_eq!(outcome.kept, 1, "movi-identical avi pair must stay confirmed: {outcome:?}");
+}
+
+fn synthesize_avi(movi: &[u8], idit: &[u8]) -> Vec<u8> {
+    let riff_chunk = |id: &[u8; 4], payload: &[u8]| {
+        let mut v = Vec::new();
+        v.extend_from_slice(id);
+        v.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        v.extend_from_slice(payload);
+        if payload.len() % 2 == 1 {
+            v.push(0);
+        }
+        v
+    };
+    let hdrl = riff_chunk(b"LIST", &[b"hdrl".as_slice(), &riff_chunk(b"IDIT", idit)].concat());
+    let movi_list = riff_chunk(b"LIST", &[b"movi".as_slice(), movi].concat());
+    let body = [hdrl, movi_list].concat();
+
+    let mut v = Vec::new();
+    v.extend_from_slice(b"RIFF");
+    v.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    v.extend_from_slice(b"AVI ");
+    v.extend_from_slice(&body);
+    v
 }
