@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rayon::prelude::*;
 
 use crate::Scanner::fastScan::hash_image_data_parallel;
-use crate::exif::{creation_date_with_timeout, CreationDate};
+use crate::exif::{creation_dates_batch, CreationDate};
 use crate::image_reader::collect_image_files;
 
 #[derive(Debug)]
@@ -123,18 +123,16 @@ pub fn scan_exif_with_progress(
     paths: &[PathBuf],
     progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> Vec<DatedOriginal> {
-    let total = paths.len();
-    let done = AtomicUsize::new(0);
-
+    // Dates are resolved in one pass: in-process readers per file, a single
+    // batched exiftool subprocess for the undatable remainder, then folder
+    // proxies (see creation_dates_batch).
+    let dates = creation_dates_batch(paths, progress);
     paths
-        .par_iter()
-        .map(|path| {
-            let creation_date = creation_date_with_timeout(path, crate::exif::EXIF_TIMEOUT);
-            progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
-            DatedOriginal {
-                path: path.clone(),
-                creation_date,
-            }
+        .iter()
+        .zip(dates)
+        .map(|(path, creation_date)| DatedOriginal {
+            path: path.clone(),
+            creation_date,
         })
         .collect()
 }
@@ -297,13 +295,31 @@ pub struct DupPair {
     pub b: PathBuf,
 }
 
+/// A pair that deep scanning rejected as NOT duplicates, with the layer of
+/// evidence that disagreed (movies: full payload hashes, printed verbatim;
+/// stills: decoded pixels).
+#[derive(Debug)]
+pub struct RemovedPair {
+    pub a: PathBuf,
+    pub b: PathBuf,
+    pub reason: String,
+}
+
 /// Outcome of a deep scan: pairs confirmed as duplicates, and false positives
 /// (the 64kb head matched but the files are not actually the same image).
+/// A false-positive report is only produced for a B file that did NOT match
+/// any A file: pairs whose B was confirmed against a *different* A file are
+/// shallow-only links, counted in `covered` and suppressed — including from
+/// the originals promotion the web layer derives from `removed`.
 #[derive(Debug)]
 pub struct DeepScanOutcome {
+    /// Adjudicated pairs (kept + removed rows actually reported).
     pub checked: usize,
     pub kept: usize,
-    pub removed: Vec<DupPair>,
+    /// Shallow pairs that disagreed but whose B is a confirmed duplicate of
+    /// some other A file (cross-product leftovers).
+    pub covered: usize,
+    pub removed: Vec<RemovedPair>,
 }
 
 pub fn deep_scan_pairs(pairs: &[DupPair]) -> DeepScanOutcome {
@@ -322,41 +338,71 @@ pub fn deep_scan_pairs_with_progress(
     let total = pairs.len();
     let done = AtomicUsize::new(0);
 
-    let kept_flags: Vec<bool> = pairs
+    let verdicts: Vec<Option<String>> = pairs
         .par_iter()
         .map(|pair| {
-            let kept = catch_unwind(AssertUnwindSafe(|| is_true_duplicate(&pair.a, &pair.b)))
-                .unwrap_or(true);
+            let verdict = catch_unwind(AssertUnwindSafe(|| is_true_duplicate(&pair.a, &pair.b)))
+                .unwrap_or(None);
             progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
-            kept
+            verdict
         })
         .collect();
 
     let checked = pairs.len();
+
+    // The pairs form the A x B cross product of each 64kb hash bucket, so a
+    // single B can sit in several pairs. B files confirmed against some A are
+    // fully accounted for; any other pair mentioning that B is a shallow-only
+    // link — it must not surface as a false positive (which would demote a
+    // true duplicate back into the originals list downstream).
+    let confirmed_b: HashSet<PathBuf> = pairs
+        .iter()
+        .zip(&verdicts)
+        .filter(|(_, reason)| reason.is_none())
+        .map(|(pair, _)| pair.b.clone())
+        .collect();
+
     let mut kept = 0usize;
+    let mut covered = 0usize;
     let mut removed = Vec::new();
-    for (pair, is_kept) in pairs.iter().zip(kept_flags) {
-        if is_kept {
-            kept += 1;
-        } else {
-            removed.push(pair.clone());
+    for (pair, reason) in pairs.iter().zip(verdicts) {
+        match reason {
+            None => kept += 1,
+            Some(reason) => {
+                if confirmed_b.contains(&pair.b) {
+                    // B already proved to exist in A via a different pair.
+                    covered += 1;
+                    continue;
+                }
+                tracing::warn!(
+                    "deep scan removed pair:\n  A: {}\n  B: {}\n  reason: {}",
+                    pair.a.display(),
+                    pair.b.display(),
+                    reason
+                );
+                removed.push(RemovedPair {
+                    a: pair.a.clone(),
+                    b: pair.b.clone(),
+                    reason,
+                });
+            }
         }
     }
 
     DeepScanOutcome {
         checked,
         kept,
+        covered,
         removed,
     }
 }
-
-fn is_true_duplicate(a: &Path, b: &Path) -> bool {
+fn is_true_duplicate(a: &Path, b: &Path) -> Option<String> {
     use crate::image_reader::{hash_all_bytes, hash_image_data_all, is_video, read_image};
 
     // Exact bytes: trivially duplicates.
     if let (Ok(ha), Ok(hb)) = (hash_all_bytes(a), hash_all_bytes(b)) {
         if ha == hb {
-            return true;
+            return None;
         }
     }
 
@@ -366,14 +412,16 @@ fn is_true_duplicate(a: &Path, b: &Path) -> bool {
     match (hash_image_data_all(a), hash_image_data_all(b)) {
         (Ok(ha), Ok(hb)) => {
             if ha == hb {
-                return true;
+                return None;
             }
             if is_video(a) || is_video(b) {
-                return false;
+                return Some(format!(
+                    "full video payloads differ (mdat hash {ha:016x} vs {hb:016x})"
+                ));
             }
         }
         // Undecodable: cannot prove a false positive.
-        _ => return true,
+        _ => return None,
     }
 
     // Stills with different encoded data can still be the same image in a
@@ -382,8 +430,14 @@ fn is_true_duplicate(a: &Path, b: &Path) -> bool {
         catch_unwind(AssertUnwindSafe(|| read_image(a))),
         catch_unwind(AssertUnwindSafe(|| read_image(b))),
     ) {
-        (Ok(Ok(ia)), Ok(Ok(ib))) => images_equal(&ia, &ib),
-        _ => true, // undecodable: cannot prove a false positive
+        (Ok(Ok(ia)), Ok(Ok(ib))) => {
+            if images_equal(&ia, &ib) {
+                None
+            } else {
+                Some("decoded pixels differ".to_string())
+            }
+        }
+        _ => None, // undecodable: cannot prove a false positive
     }
 }
 
@@ -502,25 +556,23 @@ pub fn verify_tree_dates_with_progress(
     root: &Path,
     progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> Result<VerifyOutcome, Box<dyn std::error::Error>> {
-    use crate::exif::creation_date_with_timeout;
+    use crate::exif::creation_dates_batch;
 
     let files = collect_image_files(root)?;
     let total = files.len();
-    let done = AtomicUsize::new(0);
 
-    // Parallel: the per-file date is the expensive part (raw metadata can
-    // involve whole-file reads). Each file is time-limited so a stalled
-    // decoder can never freeze the pass; stalled files fall back to the
-    // folder proxy date inside `creation_date_with_timeout`.
+    // Dates come from one pass over the tree: in-process readers per file,
+    // a single batched exiftool subprocess for the undatable remainder, then
+    // folder proxies. Each in-process read is still individually time-limited.
+    let dates = creation_dates_batch(&files, progress);
     let classifications: Vec<(Option<(u32, u32, u32)>, Option<(u32, u32, u32)>)> = files
-        .par_iter()
-        .map(|path| {
-            let exif_ymd = ymd_from_string(
-                &creation_date_with_timeout(path, crate::exif::EXIF_TIMEOUT).to_string(),
-            );
-            let folder_ymd = folder_implied_date(path);
-            progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
-            (exif_ymd, folder_ymd)
+        .iter()
+        .zip(dates)
+        .map(|(path, date)| {
+            (
+                ymd_from_string(&date.to_string()),
+                folder_implied_date(path),
+            )
         })
         .collect();
 

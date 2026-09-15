@@ -2,7 +2,7 @@
   <div class="panel-toolbar">
     <div class="toolbar-title">
       <h2>Deep Scan</h2>
-      <span class="subtitle">{{ checked }} pairs checked · {{ removed_count }} removed as false positives · {{ kept }} confirmed duplicates</span>
+      <span class="subtitle">{{ checked }} pairs checked · {{ kept }} confirmed duplicates · {{ removed_count }} removed as false positives{% if covered > 0 %} · {{ covered }} shallow-only matches already covered by a confirmed duplicate{% endif %}</span>
     </div>
   </div>
 
@@ -17,12 +17,13 @@
     </div>
     <div class="table-scroll">
       <table class="compare-table">
-        <thead><tr><th>Destination (A)</th><th>Candidate (B)</th></tr></thead>
+        <thead><tr><th>Destination (A)</th><th>Candidate (B)</th><th>Why removed</th></tr></thead>
         <tbody>
           {% for p in removed %}
           <tr class="row-b">
             <td class="path clickable" data-reveal="{{ p.a }}">{{ p.a }}</td>
             <td class="path clickable" data-reveal="{{ p.b }}">{{ p.b }}</td>
+            <td class="muted">{{ p.reason }}</td>
           </tr>
           {% endfor %}
         </tbody>

@@ -198,6 +198,7 @@ struct DeepForm {
 struct DeepScanTemplate {
     checked: usize,
     kept: usize,
+    covered: usize,
     removed_count: usize,
     removed: Vec<DeepPairView>,
     originals_input: String,
@@ -209,6 +210,7 @@ struct DeepScanTemplate {
 struct DeepPairView {
     pub a: String,
     pub b: String,
+    pub reason: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -631,6 +633,9 @@ async fn compare_deep(
         .filter(|f| !f.is_empty())
         .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
 
+    tracing::info!("deep scan request: {} pairs", pairs.len());
+    tracing::debug!("deep pairs:\n{}", form.pairs);
+
     let (tx, rx) = mpsc::unbounded_channel::<Msg>();
     let progress_tx = tx.clone();
     let done_tx = tx.clone();
@@ -677,12 +682,14 @@ fn render_deep_scan(
         .map(|p| DeepPairView {
             a: to_string(&p.a),
             b: to_string(&p.b),
+            reason: p.reason.clone(),
         })
         .collect();
 
     let tpl = DeepScanTemplate {
         checked: outcome.checked,
         kept: outcome.kept,
+        covered: outcome.covered,
         removed_count: outcome.removed.len(),
         removed,
         originals_input: originals_input.to_string(),

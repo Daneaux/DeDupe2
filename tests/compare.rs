@@ -692,3 +692,200 @@ fn raw_and_jpg_sidecars_are_never_grouped_as_duplicates() {
     );
     assert_eq!(names(&cmp.b_only), vec!["shot.jpg".to_string()]);
 }
+
+#[test]
+fn deep_scan_confirms_byte_identical_duplicates_in_cross_product_groups() {
+    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    let img = sample("jpg-exif-mod/image1.JPG");
+    write(&a, "x1.jpg", &img);
+    write(&a, "x2.jpg", &img);
+    write(&b, "y1.jpg", &img);
+    write(&b, "y2.jpg", &img);
+
+    let cmp = compare_folders(&a, &b).unwrap();
+    assert_eq!(cmp.duplicates.len(), 1);
+    let group = &cmp.duplicates[0];
+    assert_eq!(group.a.len(), 2);
+    assert_eq!(group.b.len(), 2);
+
+    let pairs: Vec<DupPair> = group
+        .a
+        .iter()
+        .flat_map(|x| group.b.iter().map(move |y| DupPair { a: x.clone(), b: y.clone() }))
+        .collect();
+    assert_eq!(pairs.len(), 4);
+
+    let outcome = deep_scan_pairs(&pairs);
+    assert_eq!(outcome.kept, 4, "byte-identical cross pairs must all be confirmed");
+    assert!(outcome.removed.is_empty(), "removed: {:?}", outcome.removed);
+}
+
+#[test]
+fn deep_scan_confirms_byte_identical_raw_pairs() {
+    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    let raw = sample("raw-exif-mod/raw_rw2-exif.rw2");
+    write(&a, "shot.rw2", &raw);
+    write(&b, "shot-copy.rw2", &raw);
+
+    let outcome = deep_scan_pairs(&[DupPair {
+        a: a.join("shot.rw2"),
+        b: b.join("shot-copy.rw2"),
+    }]);
+    assert_eq!(outcome.kept, 1);
+    assert!(outcome.removed.is_empty());
+}
+
+/// Environment-specific regression: the real IMG_0857.MOV pair that was once
+/// (wrongly, per the user) reported as a false positive. Pinned to the
+/// library owner's `4tbext` paths, so it is ignored by default — run with
+/// `cargo test --test compare fixed_0857_pair -- --ignored --nocapture`.
+/// Verifies the whole verdict chain on ~503mb videos: the shallow 64kb hash
+/// matches (that is what groups them), the full byte and full-mdat hashes
+/// agree, and deep scan therefore confirms — never removes — the pair.
+#[test]
+#[ignore]
+fn fixed_0857_pair_shallow_then_full_hash_confirmed() {
+    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::image_reader::{hash_all_bytes, hash_image_data_all, hash_image_data_status};
+
+    let a = std::path::Path::new(
+        "/Users/dannydalal/4tbext/SrcImageFolders/Single Events/Original 2000-2019/2013/2013-07-30/IMG_0857.MOV",
+    );
+    let b = std::path::Path::new("/Users/dannydalal/4tbext/AllPhotos/2013/07-30/IMG_0857.MOV");
+    assert!(a.exists() && b.exists(), "library files missing — skip");
+
+    // Layer 1: shallow 64kb image-data hash — what paired them in the UI.
+    let (sha, sa_ok) = hash_image_data_status(a, 64 * 1024);
+    let (shb, sb_ok) = hash_image_data_status(b, 64 * 1024);
+    assert!(sa_ok && sb_ok, "both must decode ({sa_ok}, {sb_ok})");
+    assert_eq!(sha, shb, "shallow hashes must be the reason they paired");
+
+    // Layer 2: full byte hash.
+    let ha = hash_all_bytes(a).unwrap();
+    let hb = hash_all_bytes(b).unwrap();
+    assert_eq!(ha, hb, "files must be byte-identical");
+
+    // Layer 3: full image-data (complete mdat payload) hash.
+    let ma = hash_image_data_all(a).unwrap();
+    let mb = hash_image_data_all(b).unwrap();
+    assert_eq!(ma, mb, "full video payloads must be identical");
+
+    let outcome = deep_scan_pairs(&[DupPair {
+        a: a.to_path_buf(),
+        b: b.to_path_buf(),
+    }]);
+    assert_eq!(outcome.kept, 1, "confirmed duplicates: {outcome:?}");
+    assert!(outcome.removed.is_empty(), "removed: {outcome:?}");
+}
+
+/// Build many distinct video payloads that share the same 64kb head, so the
+/// shallow scan buckets them together even though their content differs.
+fn head_shared_video(tail: &[u8]) -> Vec<u8> {
+    let mut payload = vec![0xABu8; 70 * 1024];
+    payload.extend_from_slice(tail);
+    let ftyp = boxed(b"ftyp", b"isomisom");
+    let moov = boxed(b"moov", &[0u8; 128]);
+    let mdat = boxed(b"mdat", &payload);
+    [ftyp, moov, mdat].concat()
+}
+
+#[test]
+fn deep_scan_reports_no_false_positives_or_originals_when_every_b_matches_some_a() {
+    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    let v1 = head_shared_video(b"AAAA-actual-content"); // a1 == b1
+    let v2 = head_shared_video(b"BBBB-different-content"); // a2 == b2
+
+    write(&a, "a1.mp4", &v1);
+    write(&a, "a2.mp4", &v2);
+    write(&b, "b1.mp4", &v1);
+    write(&b, "b2.mp4", &v2);
+
+    // Shallow scan buckets all four together (their 64kb heads are equal).
+    let cmp = compare_folders(&a, &b).unwrap();
+    assert_eq!(cmp.duplicates.len(), 1);
+    let group = &cmp.duplicates[0];
+    assert_eq!(group.a.len(), 2);
+    assert_eq!(group.b.len(), 2);
+
+    // Full A x B cross product, exactly as the web layer posts it.
+    let pairs: Vec<DupPair> = group
+        .a
+        .iter()
+        .flat_map(|x| group.b.iter().map(move |y| DupPair { a: x.clone(), b: y.clone() }))
+        .collect();
+    assert_eq!(pairs.len(), 4);
+
+    let outcome = deep_scan_pairs(&pairs);
+    // (a1,b1) and (a2,b2) confirmed; (a1,b2)/(a2,b1) are shallow-only links.
+    assert_eq!(outcome.kept, 2, "{outcome:?}");
+    assert!(outcome.removed.is_empty(), "cross rows must be suppressed: {outcome:?}");
+    assert_eq!(outcome.covered, 2);
+    // No B file is a genuine false positive, so nothing feeds the originals.
+    let promoted: Vec<_> = outcome.removed.iter().map(|p| p.b.to_string_lossy()).collect();
+    assert!(promoted.is_empty());
+}
+
+#[test]
+fn deep_scan_keeps_false_positive_when_b_matches_no_a_at_all() {
+    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+
+    let root = tempfile::tempdir().unwrap();
+    // Two A files, one B; B shares the head with both but duplicates neither.
+    let a1 = root.path().join("a1.mp4");
+    let a2 = root.path().join("a2.mp4");
+    let b1 = root.path().join("b1.mp4");
+    fs::write(&a1, head_shared_video(b"AAAA-actual-content")).unwrap();
+    fs::write(&a2, head_shared_video(b"BBBB-different-content")).unwrap();
+    fs::write(&b1, head_shared_video(b"CCCC-third-content")).unwrap();
+
+    let outcome = deep_scan_pairs(&[
+        DupPair { a: a1.clone(), b: b1.clone() },
+        DupPair { a: a2.clone(), b: b1.clone() },
+    ]);
+    assert_eq!(outcome.kept, 0);
+    assert_eq!(outcome.removed.len(), 2, "both comparisons genuinely disagreed: {outcome:?}");
+    // B matched nothing, so exactly one B path surfaces for originals
+    // promotion (deduplicated downstream, but each row must carry it).
+    let promoted: Vec<_> = outcome.removed.iter().map(|p| p.b.to_string_lossy()).collect();
+    assert_eq!(promoted, vec![b1.display().to_string(), b1.display().to_string()]);
+}
+
+#[test]
+fn deep_scan_keeps_false_positive_rows_for_b_matching_nothing_even_with_confirmed_siblings() {
+    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+
+    let root = tempfile::tempdir().unwrap();
+    // Two A files, two B files: b1 duplicates a1; b2 matches NOTHING.
+    let a1 = root.path().join("a1.mp4");
+    let a2 = root.path().join("a2.mp4");
+    let b1 = root.path().join("b1.mp4");
+    let b2 = root.path().join("b2.mp4");
+    fs::write(&a1, head_shared_video(b"AAAA-actual-content")).unwrap();
+    fs::write(&a2, head_shared_video(b"BBBB-different-content")).unwrap();
+    fs::write(&b1, head_shared_video(b"AAAA-actual-content")).unwrap();
+    fs::write(&b2, head_shared_video(b"CCCC-third-content")).unwrap();
+
+    let outcome = deep_scan_pairs(&[
+        DupPair { a: a1, b: b1 },
+        DupPair { a: a2, b: b2 },
+    ]);
+    assert_eq!(outcome.kept, 1, "{outcome:?}");
+    assert_eq!(outcome.removed.len(), 1, "{outcome:?}");
+    assert_eq!(
+        outcome.removed[0].b.file_name().unwrap().to_string_lossy(),
+        "b2.mp4",
+        "only the genuinely unmatched B may surface: {outcome:?}"
+    );
+}

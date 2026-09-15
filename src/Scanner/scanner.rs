@@ -3,7 +3,7 @@ use std::time::SystemTime;
 
 use walkdir::WalkDir;
 
-use crate::exif::{creation_date, CreationDate};
+use crate::exif::{creation_dates_batch, CreationDate};
 use crate::image_reader::{hash_all_bytes, hash_first_n_bytes};
 use crate::volumes::{FileType, Volume};
 
@@ -68,6 +68,17 @@ fn scan(target: &ScanTarget, kind: HashKind) -> ScannedTree {
         scan_path(path, kind, target, &mut files);
     }
 
+    // Dates for the whole tree in one pass: in-process readers per file,
+    // one batched exiftool subprocess for the undatable files, folder
+    // names last (see creation_dates_batch).
+    let dates = creation_dates_batch(
+        &files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
+        &|_, _| {},
+    );
+    for (file, date) in files.iter_mut().zip(dates) {
+        file.creation_date = date;
+    }
+
     ScannedTree {
         root: target.volume.path.clone(),
         files,
@@ -105,7 +116,7 @@ fn scan_path(root: &Path, kind: HashKind, target: &ScanTarget, files: &mut Vec<S
             modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
             file_type: file_type_of(&path),
             hash,
-            creation_date: creation_date(&path),
+            creation_date: CreationDate::Unknown,
         });
     }
 }
