@@ -254,3 +254,123 @@ fn purgatory_move_reports_failures_and_leaves_sources_in_place() {
         .any(|(p, r)| p == &outside && r.contains("not inside the candidate tree")));
     assert!(outside.exists(), "file outside the tree is never touched");
 }
+
+#[test]
+fn organize_rejects_confirmed_duplicates_and_moves_the_rest() {
+    use dedupe2::filemover::{organize_into_destination_with_progress, Operation};
+
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("src/2005");
+    let dest = root.path().join("dest");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(dest.join("2005/01-10")).unwrap();
+
+    let img = std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
+
+    // a.jpg already exists byte-identically in the destination folder.
+    let a = src.join("a.jpg");
+    let b = src.join("b.jpg");
+    std::fs::write(&a, &img).unwrap();
+    std::fs::write(&b, b"other photo bytes").unwrap();
+    let existing = dest.join("2005/01-10/old-name.jpg");
+    std::fs::write(&existing, &img).unwrap();
+
+    let dated = vec![
+        (a.clone(), CreationDate::DateCreated("2005-01-10 10:00:00".into())),
+        (b.clone(), CreationDate::DateCreated("2005-01-10 11:00:00".into())),
+    ];
+    let outcome = organize_into_destination_with_progress(
+        &dated,
+        &dest,
+        "YYYY/MM-DD",
+        Operation::Move,
+        &|_, _| {},
+    );
+
+    assert_eq!(outcome.planned, 2);
+    assert_eq!(outcome.moved, 1, "outcome: {outcome:?}");
+    assert_eq!(outcome.rejected_duplicates.len(), 1);
+    assert_eq!(outcome.rejected_duplicates[0].0, a);
+    assert_eq!(outcome.rejected_duplicates[0].1, existing);
+    assert!(a.exists(), "rejected source stays in place");
+    assert!(!b.exists(), "non-duplicate moved");
+    assert!(dest.join("2005/01-10/b.jpg").exists());
+    assert!(existing.exists(), "existing destination file untouched");
+}
+
+#[test]
+fn organize_deep_scan_stops_shallow_lookalikes() {
+    use dedupe2::filemover::{organize_into_destination_with_progress, Operation};
+
+    let boxed = |tag: &[u8; 4], payload: &[u8]| {
+        let mut v = ((payload.len() as u32) + 8).to_be_bytes().to_vec();
+        v.extend_from_slice(tag);
+        v.extend_from_slice(payload);
+        v
+    };
+    let video = |tail: &[u8]| {
+        let mut payload = vec![0xABu8; 70 * 1024];
+        payload.extend_from_slice(tail);
+        [
+            boxed(b"ftyp", b"isomisom"),
+            boxed(b"moov", &[0u8; 128]),
+            boxed(b"mdat", &payload),
+        ]
+        .concat()
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("src");
+    let dest = root.path().join("dest");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(dest.join("2005/01-10")).unwrap();
+
+    // Same 64kb head, different content: shallow says "maybe dup", the
+    // automatic deep scan must reject the pairing so the file still moves.
+    let source = src.join("clip.mp4");
+    std::fs::write(&source, video(b"BBBB-actual")).unwrap();
+    std::fs::write(dest.join("2005/01-10/existing.mp4"), video(b"AAAA-other")).unwrap();
+
+    let dated = vec![(source.clone(), CreationDate::DateCreated("2005-01-10".into()))];
+    let outcome = organize_into_destination_with_progress(
+        &dated,
+        &dest,
+        "YYYY/MM-DD",
+        Operation::Move,
+        &|_, _| {},
+    );
+
+    assert_eq!(outcome.moved, 1, "shallow-only match must still move: {outcome:?}");
+    assert!(outcome.rejected_duplicates.is_empty());
+    assert!(dest.join("2005/01-10/clip.mp4").exists());
+}
+
+#[test]
+fn organize_skips_files_without_dates() {
+    use dedupe2::filemover::{organize_into_destination_with_progress, Operation};
+
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("src");
+    let dest = root.path().join("dest");
+    std::fs::create_dir_all(&src).unwrap();
+
+    let undated = src.join("mystery.jpg");
+    std::fs::write(&undated, b"no date").unwrap();
+
+    let dated = vec![(undated.clone(), CreationDate::Unknown)];
+    let outcome = organize_into_destination_with_progress(
+        &dated,
+        &dest,
+        "YYYY/MM-DD",
+        Operation::Move,
+        &|_, _| {},
+    );
+
+    assert_eq!(outcome.skipped_no_date, 1);
+    assert_eq!(outcome.moved, 0);
+    assert!(undated.exists());
+    assert!(!dest.exists() || std::fs::read_dir(&dest).unwrap().next().is_none());
+}

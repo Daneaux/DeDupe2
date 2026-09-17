@@ -1,0 +1,68 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Organize Preview</h2>
+      <span class="subtitle">{{ source }} &rarr; {{ destination }}</span>
+    </div>
+  </div>
+
+  <div class="merge-summary">
+    <div class="summary-stat">
+      <span class="summary-value">{{ total }}</span>
+      <span class="summary-label">files found</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ dated_count }}</span>
+      <span class="summary-label">with dates</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ unknown_count }}</span>
+      <span class="summary-label">undated (left alone)</span>
+    </div>
+  </div>
+
+  <div class="table-scroll">
+    <table class="compare-table">
+      <thead><tr><th>Source</th><th>EXIF date</th><th>Destination</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="path clickable" data-reveal="{{ r.source }}">{{ r.source }}</td>
+          <td>{{ r.date }}</td>
+          <td class="path">{{ r.destination }}</td>
+        </tr>
+        {% endfor %}
+        {% if rows_more > 0 %}
+        <tr class="more-row"><td colspan="3" class="muted">… {{ rows_more }} more not shown</td></tr>
+        {% endif %}
+        {% if rows.len() == 0 %}
+        <tr><td colspan="3" class="muted">No supported media found.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <form method="post" action="/organize/run" id="organize-move-form" class="merge-form">
+    <input type="hidden" name="files" value="{{ files_input }}" />
+    <input type="hidden" name="dates" value="{{ dates_input }}" />
+    <label class="field">
+      <span>Destination root</span>
+      <input type="text" name="destination" value="{{ destination }}" />
+    </label>
+    <label class="field">
+      <span>Destination format</span>
+      <input type="text" name="format" value="{{ format }}" />
+    </label>
+    <label class="field">
+      <span>Operation</span>
+      <select name="op" id="copy-op-select">
+        <option value="move" selected>Move (remove from source)</option>
+        <option value="copy">Copy (leave in source)</option>
+      </select>
+    </label>
+    <span class="hint">At move time each destination folder is shallow-scanned and candidates are deep-verified automatically; confirmed duplicates are rejected (left in the source).</span>
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary" {% if dated_count == 0 %}disabled{% endif %}>Organize {{ dated_count }} files</button>
+    </div>
+  </form>
+</section>

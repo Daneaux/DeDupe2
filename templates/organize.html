@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel" role="tabpanel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Organize</h2>
+      <span class="subtitle">Sort a source tree into the destination by EXIF date. The destination is only checked where files land, at move time: shallow first, then an automatic deep scan of the candidates — confirmed duplicates are rejected.</span>
+    </div>
+  </div>
+
+  <form method="post" action="/organize/scan" id="organize-form">
+    <label class="field">
+      <span>Source tree</span>
+      <input type="text" name="source" placeholder="/path/to/source" />
+    </label>
+
+    <label class="field">
+      <span>Destination root</span>
+      <input type="text" name="destination" placeholder="/path/to/library" />
+    </label>
+
+    <label class="field">
+      <span>Destination format</span>
+      <input type="text" name="format" value="YYYY/MM-DD <folder description>" />
+      <span class="hint">Tokens: YYYY, MM, DD from the EXIF date; <code>&lt;folder description&gt;</code> (or DESC) from the source folder name.</span>
+    </label>
+
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary">Scan source</button>
+    </div>
+  </form>
+</section>
+
+<div id="organize-progress" class="merge-progress" hidden>
+  <div class="merge-progress-label" id="organize-progress-text">Working…</div>
+  <div class="merge-progress-track"><div class="merge-progress-fill" id="organize-progress-fill"></div></div>
+</div>
+
+<div id="organize-result"></div>
+
+<script src="/static/compare.js?v=18"></script>
+{% endblock %}

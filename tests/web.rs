@@ -482,3 +482,128 @@ async fn unknown_carried_dates_skip_extraction_entirely() {
     let landed: Vec<_> = std::fs::read_dir(&library).unwrap().collect();
     assert!(landed.is_empty(), "unknown-marked file must not be placed: {landed:?}");
 }
+
+#[tokio::test]
+async fn organize_scan_previews_destinations_from_exif() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source/2005");
+    let dest = root.path().join("dest");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(&dest).unwrap();
+
+    // Fixture EXIF date is 2022-08-17.
+    let img = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/TestImages/jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
+    let shot = source.join("shot.jpg");
+    std::fs::write(&shot, &img).unwrap();
+
+    let res = app()
+        .oneshot(form_request(
+            "/organize/scan",
+            format!(
+                "source={}&destination={}&format={}",
+                urlencode(&source.display().to_string()),
+                urlencode(&dest.display().to_string()),
+                urlencode("YYYY/MM-DD <folder description>")
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+
+    assert!(html.contains("Organize Preview"), "{html}");
+    assert!(html.contains("2022/08-17"), "destination column: {html}");
+    assert!(html.contains("Organize 1 files"), "move button: {html}");
+    // The hidden files/dates inputs must carry the batch for the run phase.
+    assert!(html.contains("shot.jpg"));
+    assert!(html.contains("2022-08-17"), "carried date: {html}");
+}
+
+#[tokio::test]
+async fn organize_run_rejects_duplicates_already_in_destination() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source/2005");
+    let dest = root.path().join("dest");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(dest.join("2005/01-10")).unwrap();
+
+    let img = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/TestImages/jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
+    let dup = source.join("dup.jpg");
+    let fresh = source.join("fresh.jpg");
+    std::fs::write(&dup, &img).unwrap();
+    std::fs::write(&fresh, b"unique photo bytes").unwrap();
+    let existing = dest.join("2005/01-10/already-here.jpg");
+    std::fs::write(&existing, &img).unwrap();
+
+    let files = format!("{}\n{}", dup.display(), fresh.display());
+    let dates = format!(
+        "{}\t2005-01-10 10:00:00\n{}\t2005-01-10 11:00:00",
+        dup.display(),
+        fresh.display()
+    );
+    let res = app()
+        .oneshot(form_request(
+            "/organize/run",
+            format!(
+                "files={}&dates={}&destination={}&format={}&op=move",
+                urlencode(&files),
+                urlencode(&dates),
+                urlencode(&dest.display().to_string()),
+                urlencode("YYYY/MM-DD")
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+
+    assert!(html.contains("Organize Complete"), "{html}");
+    assert!(html.contains("Rejected duplicates"), "{html}");
+    assert!(html.contains("already-here.jpg"), "matched existing file: {html}");
+    assert!(dup.exists(), "rejected source stays in the source tree");
+    assert!(!fresh.exists(), "fresh file moved");
+    assert!(dest.join("2005/01-10/fresh.jpg").exists());
+}
+
+/// Static consistency: every page that includes compare.js must define the
+/// progress/result element ids the script binds to, and the script's lookup
+/// chain must include that page's prefix. Missing this made the organize
+/// tab's submit button do nothing (null elements → exception).
+#[test]
+fn js_progress_bindings_match_every_page_that_uses_them() {
+    let js = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/compare.js"),
+    )
+    .unwrap();
+
+    let pages = [
+        ("templates/compare.html", "compare"),
+        ("templates/sets.html", "sets"),
+        ("templates/verify.html", "verify"),
+        ("templates/organize.html", "organize"),
+    ];
+    for (template, prefix) in pages {
+        let html = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(template),
+        )
+        .unwrap();
+        assert!(
+            js.contains(&format!("\"{prefix}-\" + suffix")),
+            "compare.js pick() must look up {prefix}- ids"
+        );
+        for suffix in ["progress", "progress-fill", "progress-text", "result"] {
+            assert!(
+                html.contains(&format!("id=\"{prefix}-{suffix}\"")),
+                "{template} is missing id=\"{prefix}-{suffix}\""
+            );
+        }
+    }
+}

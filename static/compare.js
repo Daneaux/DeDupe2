@@ -2,7 +2,8 @@
   const pick = (suffix) =>
     document.getElementById("compare-" + suffix) ||
     document.getElementById("sets-" + suffix) ||
-    document.getElementById("verify-" + suffix);
+    document.getElementById("verify-" + suffix) ||
+    document.getElementById("organize-" + suffix);
   const progress = pick("progress");
   const fill = pick("progress-fill");
   const text = pick("progress-text");
@@ -66,6 +67,12 @@
     } else if (form.id === "purgatory-form") {
       url = "/compare/purgatory";
       phaseLabel = "Moving";
+    } else if (form.id === "organize-form") {
+      url = "/organize/scan";
+      phaseLabel = "Scanning";
+    } else if (form.id === "organize-move-form") {
+      url = "/organize/run";
+      phaseLabel = "Organizing";
     } else if (form.id === "verify-form") {
       url = "/verify/run";
       phaseLabel = "Verifying";

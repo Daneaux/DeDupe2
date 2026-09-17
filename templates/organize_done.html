@@ -1,0 +1,77 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Organize Complete</h2>
+      <span class="subtitle">{{ destination }} · duplicates checked per destination folder (64kb shallow → automatic deep scan)</span>
+    </div>
+  </div>
+
+  <div class="merge-summary">
+    <div class="summary-stat">
+      <span class="summary-value">{{ moved }}</span>
+      <span class="summary-label">moved of {{ planned }}</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ rejected_count }}</span>
+      <span class="summary-label">rejected (already in destination)</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ skipped_no_date }}</span>
+      <span class="summary-label">skipped (no date)</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ failure_count }}</span>
+      <span class="summary-label">failures (left in source)</span>
+    </div>
+  </div>
+
+  {% if rejected_count > 0 %}
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Rejected duplicates</span>
+      <span class="badge badge-ok">{{ rejected_count }}</span>
+      <span class="collection-sub">already present in the destination folder — left in the source</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Source</th><th>Already exists as</th></tr></thead>
+        <tbody>
+          {% for r in rejected %}
+          <tr class="row-a">
+            <td class="path clickable" data-reveal="{{ r.0 }}">{{ r.0 }}</td>
+            <td class="path clickable" data-reveal="{{ r.1 }}">{{ r.1 }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+  {% endif %}
+
+  {% if failure_count > 0 %}
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Failures</span>
+      <span class="badge badge-dirty">{{ failure_count }}</span>
+      <span class="collection-sub">left in the source</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Path</th><th>Reason</th></tr></thead>
+        <tbody>
+          {% for f in failures %}
+          <tr class="row-b">
+            <td class="path clickable" data-reveal="{{ f.0 }}">{{ f.0 }}</td>
+            <td class="muted">{{ f.1 }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+  {% endif %}
+
+  <div class="toolbar-actions">
+    <a class="btn btn-secondary" href="/organize">Back to organize</a>
+  </div>
+</section>
