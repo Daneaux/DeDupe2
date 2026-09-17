@@ -32,10 +32,13 @@
       result.innerHTML = body;
       // Verify results render client-side from embedded JSON payloads.
       if (document.getElementById("verify-mismatches-data")) renderVerify();
+      // The scan just fed the cache — update the path-field hints.
+      if (window.refreshCacheHints) window.refreshCacheHints();
     } else if (event === "error") {
       text.textContent = "Error: " + body;
       text.classList.add("error");
       fill.style.width = "100%";
+      if (window.refreshCacheHints) window.refreshCacheHints();
     }
   }
 
@@ -297,3 +300,63 @@ document.addEventListener("change", function (e) {
   if (e.target.id === "verify-status-filter" || e.target.id === "verify-days") renderVerify();
 });
 
+// --- Cached-tree hints ------------------------------------------------------
+// Path fields with [data-cache-status] get a live hint saying what that tree
+// already has cached, layer by layer (green = cached, red = not yet).
+(function () {
+  const spans = new WeakMap();
+  const n = (v) => Number(v || 0).toLocaleString();
+
+  function layer(name, value, total) {
+    const cls = value > 0 ? "cache-on" : "cache-off";
+    return name + ' <span class="' + cls + '">' + n(value) + "</span>";
+  }
+
+  function update(el) {
+    let span = spans.get(el);
+    if (!span) {
+      span = document.createElement("span");
+      span.className = "hint cache-hint";
+      el.insertAdjacentElement("afterend", span);
+      spans.set(el, span);
+    }
+    const path = el.value.trim();
+    if (!path) {
+      span.textContent = "";
+      return;
+    }
+    fetch("/cache-status?path=" + encodeURIComponent(path))
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.cached_files > 0) {
+          span.innerHTML =
+            "cached: " + n(j.cached_files) + " file(s) · " +
+            layer("shallow", j.shallow) + " · " +
+            layer("deep", j.deep) + " · " +
+            layer("exif", j.exif);
+        } else {
+          span.innerHTML = 'not cached <span class="cache-off">0</span>';
+        }
+      })
+      .catch(function () {});
+  }
+
+  let timer = null;
+  document.addEventListener("input", function (e) {
+    const el = e.target && e.target.closest && e.target.closest("[data-cache-status]");
+    if (!el) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => update(el), 300);
+  });
+
+  function refreshAll() {
+    document.querySelectorAll("[data-cache-status]").forEach((el) => {
+      if (el.value.trim()) update(el);
+    });
+  }
+  // Scans feed the cache, so refresh whenever one finishes (or fails partway).
+  window.refreshCacheHints = refreshAll;
+  refreshAll();
+  // fields.js restores remembered values after this script runs.
+  setTimeout(refreshAll, 600);
+})();

@@ -46,6 +46,26 @@ pub fn compare_folders_with_progress(
     b: &Path,
     progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> Result<Comparison, Box<dyn std::error::Error>> {
+    compare_folders_inner(a, b, None, progress)
+}
+
+/// `compare_folders_with_progress` through the hierarchical scan cache: a
+/// repeated scan of the same tree reuses every shallow hash it can.
+pub fn compare_folders_cached(
+    a: &Path,
+    b: &Path,
+    cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<Comparison, Box<dyn std::error::Error>> {
+    compare_folders_inner(a, b, Some(cache), progress)
+}
+
+fn compare_folders_inner(
+    a: &Path,
+    b: &Path,
+    cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<Comparison, Box<dyn std::error::Error>> {
     let a_files = collect_image_files(a)?;
     let b_files = collect_image_files(b)?;
 
@@ -53,12 +73,18 @@ pub fn compare_folders_with_progress(
     let mut all = a_files.clone();
     all.extend(b_files.clone());
 
-    let hashes = hash_image_data_parallel(&all, 64 * 1024, progress);
+    let hashes: Vec<(u64, bool)> = match cache {
+        Some(cache) => crate::Scanner::cache::shallow_hashes_cached(cache, &all, 64 * 1024, progress),
+        None => hash_image_data_parallel(&all, 64 * 1024, progress)
+            .into_iter()
+            .map(|h| (h.hash, h.decoded))
+            .collect(),
+    };
 
     let mut map: HashMap<u64, (Vec<PathBuf>, Vec<PathBuf>)> = HashMap::new();
     let mut unreadable = Vec::new();
     for (i, path) in all.iter().enumerate() {
-        if !hashes[i].decoded {
+        if !hashes[i].1 {
             // Only candidate-tree (B) files are surfaced as unreadable; an
             // unreadable file in the destination library is simply ignored.
             if i >= a_len {
@@ -66,7 +92,7 @@ pub fn compare_folders_with_progress(
             }
             continue;
         }
-        let entry = map.entry(hashes[i].hash).or_default();
+        let entry = map.entry(hashes[i].0).or_default();
         if i < a_len {
             entry.0.push(path.clone());
         } else {
@@ -187,14 +213,44 @@ pub fn compare_sets_with_progress(
     candidates: &[PathBuf],
     progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> Result<SetComparison, Box<dyn std::error::Error>> {
+    compare_sets_inner(a, candidates, None, progress)
+}
+
+/// `compare_sets_with_progress` through the hierarchical scan cache, so a
+/// tree already hashed by the compare-folders tab is reused here too.
+pub fn compare_sets_cached(
+    a: &Path,
+    candidates: &[PathBuf],
+    cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<SetComparison, Box<dyn std::error::Error>> {
+    compare_sets_inner(a, candidates, Some(cache), progress)
+}
+
+fn compare_sets_inner(
+    a: &Path,
+    candidates: &[PathBuf],
+    cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<SetComparison, Box<dyn std::error::Error>> {
+    let shallow = |files: &[PathBuf]| -> Vec<(u64, bool)> {
+        match cache {
+            Some(cache) => crate::Scanner::cache::shallow_hashes_cached(cache, files, 64 * 1024, progress),
+            None => hash_image_data_parallel(files, 64 * 1024, progress)
+                .into_iter()
+                .map(|h| (h.hash, h.decoded))
+                .collect(),
+        }
+    };
+
     let a_files = collect_image_files(a)?;
-    let a_hashes = hash_image_data_parallel(&a_files, 64 * 1024, progress);
+    let a_hashes = shallow(&a_files);
 
     let mut a_set: HashSet<u64> = HashSet::new();
     let mut a_unreadable = 0usize;
-    for fh in &a_hashes {
-        if fh.decoded {
-            a_set.insert(fh.hash);
+    for (hash, decoded) in &a_hashes {
+        if *decoded {
+            a_set.insert(*hash);
         } else {
             a_unreadable += 1;
         }
@@ -208,18 +264,18 @@ pub fn compare_sets_with_progress(
     let mut duplicates = 0usize;
     for root in candidates {
         let files = collect_image_files(root)?;
-        let hashes = hash_image_data_parallel(&files, 64 * 1024, progress);
+        let hashes = shallow(&files);
 
         let mut set: HashSet<u64> = HashSet::new();
         let mut dup = 0usize;
         let mut unreadable = 0usize;
-        for fh in &hashes {
-            if !fh.decoded {
+        for (hash, decoded) in &hashes {
+            if !*decoded {
                 unreadable += 1;
                 continue;
             }
-            set.insert(fh.hash);
-            if a_set.contains(&fh.hash) {
+            set.insert(*hash);
+            if a_set.contains(hash) {
                 dup += 1;
             }
         }
@@ -329,6 +385,17 @@ pub fn deep_scan_pairs(pairs: &[DupPair]) -> DeepScanOutcome {
     deep_scan_pairs_with_progress(pairs, &|_, _| {})
 }
 
+/// `deep_scan_pairs_with_progress` through the hierarchical scan cache: full
+/// byte/content hashes and decoded pixel keys are computed once per file and
+/// reused by later passes (and later deep scans).
+pub fn deep_scan_pairs_cached(
+    pairs: &[DupPair],
+    cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> DeepScanOutcome {
+    deep_scan_pairs_inner(pairs, Some(cache), progress)
+}
+
 /// Re-verify each duplicate pair against its full content: exact file bytes,
 /// a complete encoded-image-data hash (all scan data for stills, the whole
 /// `mdat` payload for movies), and finally fully decoded pixels for stills.
@@ -338,14 +405,25 @@ pub fn deep_scan_pairs_with_progress(
     pairs: &[DupPair],
     progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> DeepScanOutcome {
+    deep_scan_pairs_inner(pairs, None, progress)
+}
+
+fn deep_scan_pairs_inner(
+    pairs: &[DupPair],
+    cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> DeepScanOutcome {
     let total = pairs.len();
     let done = AtomicUsize::new(0);
 
     let verdicts: Vec<Option<String>> = pairs
         .par_iter()
         .map(|pair| {
-            let verdict = catch_unwind(AssertUnwindSafe(|| is_true_duplicate(&pair.a, &pair.b)))
-                .unwrap_or(None);
+            let verdict = catch_unwind(AssertUnwindSafe(|| match cache {
+                Some(cache) => is_true_duplicate_cached(cache, &pair.a, &pair.b),
+                None => is_true_duplicate(&pair.a, &pair.b),
+            }))
+            .unwrap_or(None);
             progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
             verdict
         })
@@ -406,6 +484,54 @@ pub fn deep_scan_pairs_with_progress(
 
 /// `None` when the pair is a confirmed duplicate; `Some(reason)` when it is
 /// not (the removal reason describes which level of evidence disagreed).
+/// Cache-backed `is_true_duplicate`: every full hash and pixel key is
+/// computed once per file and reused afterwards.
+fn is_true_duplicate_cached(
+    cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
+    a: &Path,
+    b: &Path,
+) -> Option<String> {
+    use crate::image_reader::is_video;
+    use crate::Scanner::cache::{full_bytes_cached, full_content_cached, pixel_cached};
+
+    let (ha, hb) = (full_bytes_cached(cache, a).ok(), full_bytes_cached(cache, b).ok());
+    if let (Some(ha), Some(hb)) = (ha, hb) {
+        if ha == hb {
+            return None;
+        }
+    }
+
+    let (ca, cb) = (
+        full_content_cached(cache, a).ok(),
+        full_content_cached(cache, b).ok(),
+    );
+    match (ca, cb) {
+        (Some(ha), Some(hb)) => {
+            if ha == hb {
+                return None;
+            }
+            if is_video(a) || is_video(b) {
+                return Some(format!(
+                    "full video payloads differ (mdat hash {ha:016x} vs {hb:016x})"
+                ));
+            }
+        }
+        _ => return None,
+    }
+
+    let (pa, pb) = (pixel_cached(cache, a), pixel_cached(cache, b));
+    match (pa, pb) {
+        (Some(pa), Some(pb)) => {
+            if pa == pb {
+                None
+            } else {
+                Some("decoded pixels differ".to_string())
+            }
+        }
+        _ => None,
+    }
+}
+
 fn is_true_duplicate(a: &Path, b: &Path) -> Option<String> {
     use crate::image_reader::{hash_all_bytes, hash_image_data_all, is_video, read_image};
 
@@ -566,6 +692,23 @@ pub fn verify_tree_dates_with_progress(
     root: &Path,
     progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> Result<VerifyOutcome, Box<dyn std::error::Error>> {
+    verify_tree_dates_inner(root, None, progress)
+}
+
+/// `verify_tree_dates_with_progress` through the hierarchical scan cache.
+pub fn verify_tree_dates_cached(
+    root: &Path,
+    cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<VerifyOutcome, Box<dyn std::error::Error>> {
+    verify_tree_dates_inner(root, Some(cache), progress)
+}
+
+fn verify_tree_dates_inner(
+    root: &Path,
+    cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<VerifyOutcome, Box<dyn std::error::Error>> {
     use crate::exif::creation_dates_batch;
 
     let files = collect_image_files(root)?;
@@ -574,7 +717,10 @@ pub fn verify_tree_dates_with_progress(
     // Dates come from one pass over the tree: in-process readers per file,
     // a single batched exiftool subprocess for the undatable remainder, then
     // folder proxies. Each in-process read is still individually time-limited.
-    let dates = creation_dates_batch(&files, progress);
+    let dates = match cache {
+        Some(cache) => crate::Scanner::cache::creation_dates_cached(cache, &files, progress),
+        None => creation_dates_batch(&files, progress),
+    };
     let classifications: Vec<(Option<(u32, u32, u32)>, Option<(u32, u32, u32)>)> = files
         .iter()
         .zip(dates)

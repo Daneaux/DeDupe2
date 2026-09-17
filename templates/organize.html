@@ -12,12 +12,12 @@
   <form method="post" action="/organize/scan" id="organize-form">
     <label class="field">
       <span>Source tree</span>
-      <input type="text" name="source" placeholder="/path/to/source" />
+      <input type="text" name="source" data-cache-status placeholder="/path/to/source" />
     </label>
 
     <label class="field">
       <span>Destination root</span>
-      <input type="text" name="destination" placeholder="/path/to/library" />
+      <input type="text" name="destination" data-cache-status placeholder="/path/to/library" />
     </label>
 
     <label class="field">
@@ -39,5 +39,5 @@
 
 <div id="organize-result"></div>
 
-<script src="/static/compare.js?v=18"></script>
+<script src="/static/compare.js?v=20"></script>
 {% endblock %}

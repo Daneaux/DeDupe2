@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod cache;
 pub mod compare;
 pub mod scanner;
 #[allow(non_snake_case)]

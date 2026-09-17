@@ -2,7 +2,7 @@
   <div class="panel-toolbar">
     <div class="toolbar-title">
       <h2>Deep Scan</h2>
-      <span class="subtitle">{{ checked }} pairs checked · {{ kept }} confirmed duplicates · {{ removed_count }} removed as false positives{% if covered > 0 %} · {{ covered }} shallow-only matches already covered by a confirmed duplicate{% endif %}</span>
+      <span class="subtitle">{{ checked }} pairs checked · {{ kept }} confirmed duplicates · {{ removed_count }} removed as false positives{% if covered > 0 %} · {{ covered }} shallow-only matches already covered by a confirmed duplicate{% endif %}{% if cache_reused > 0 || cache_computed > 0 %} · cache: {{ cache_reused }} reused / {{ cache_computed }} computed{% endif %}</span>
     </div>
   </div>
 

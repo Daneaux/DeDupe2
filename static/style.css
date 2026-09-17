@@ -745,3 +745,11 @@ body {
   border-radius: var(--radius);
   font: inherit;
 }
+
+.cache-hint .cache-on {
+  color: var(--ok);
+}
+
+.cache-hint .cache-off {
+  color: var(--danger);
+}

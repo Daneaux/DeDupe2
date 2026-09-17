@@ -2,7 +2,7 @@
   <div class="panel-toolbar">
     <div class="toolbar-title">
       <h2>Organize Preview</h2>
-      <span class="subtitle">{{ source }} &rarr; {{ destination }}</span>
+      <span class="subtitle">{{ source }} &rarr; {{ destination }}{% if cache_reused > 0 || cache_computed > 0 %} · cache: {{ cache_reused }} reused / {{ cache_computed }} computed{% endif %}</span>
     </div>
   </div>
 

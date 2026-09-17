@@ -12,13 +12,13 @@
   <form method="post" action="/compare/run" id="compare-form">
     <label class="field">
       <span>Destination tree (A)</span>
-      <input type="text" name="a" placeholder="/path/to/library" />
+      <input type="text" name="a" data-cache-status placeholder="/path/to/library" />
       <span class="hint">The originals you already have.</span>
     </label>
 
     <label class="field">
       <span>Candidate tree (B)</span>
-      <input type="text" name="b" placeholder="/path/to/new-photos" />
+      <input type="text" name="b" data-cache-status placeholder="/path/to/new-photos" />
       <span class="hint">The new photos to check against A.</span>
     </label>
 
@@ -35,5 +35,5 @@
 
 <div id="compare-result"></div>
 
-<script src="/static/compare.js?v=18"></script>
+<script src="/static/compare.js?v=20"></script>
 {% endblock %}

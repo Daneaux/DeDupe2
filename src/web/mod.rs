@@ -7,18 +7,18 @@ use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 
 use askama::Template;
-use axum::extract::{DefaultBodyLimit, Form, Query};
+use axum::extract::{DefaultBodyLimit, Form, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::Json;
 use axum::{routing::get, routing::post, Router};
 use crate::filemover::{
     consolidate_events_with_progress, default_event_purgatory,
     preview_consolidate_events_with_progress, ConsolidationOutcome, ConsolidationPlan,
 };
 use crate::Scanner::compare::{
-    compare_folders_with_progress, compare_sets_with_progress, deep_scan_pairs_with_progress,
-    scan_exif_with_progress, verify_tree_dates_with_progress, Comparison, DupPair,
-    SetComparison, VerifyOutcome,
+    compare_folders_cached, compare_sets_cached, deep_scan_pairs_cached, verify_tree_dates_cached,
+    Comparison, DupPair, SetComparison, VerifyOutcome,
 };
 use crate::filemover::{
     destination_for, move_to_purgatory_with_progress, organize_into_destination_with_progress,
@@ -71,6 +71,8 @@ struct ConsolidateDoneTemplate {
 struct CompareResultTemplate {
     a: String,
     b: String,
+    cache_reused: usize,
+    cache_computed: usize,
     a_rows: Vec<PathRowView>,
     a_more: usize,
     dup_rows: Vec<DupRowView>,
@@ -164,6 +166,8 @@ struct OrganizeResultTemplate {
     source: String,
     destination: String,
     format: String,
+    cache_reused: usize,
+    cache_computed: usize,
     total: usize,
     dated_count: usize,
     unknown_count: usize,
@@ -243,6 +247,8 @@ struct RehomeResultTemplate {
 #[template(path = "sets_result.html")]
 struct SetsResultTemplate {
     a: String,
+    cache_reused: usize,
+    cache_computed: usize,
     a_total: usize,
     a_unique: usize,
     a_unreadable: usize,
@@ -278,6 +284,8 @@ struct DeepForm {
 #[derive(Template)]
 #[template(path = "deep_scan.html")]
 struct DeepScanTemplate {
+    cache_reused: usize,
+    cache_computed: usize,
     checked: usize,
     kept: usize,
     covered: usize,
@@ -530,6 +538,7 @@ async fn compare_form() -> CompareFormTemplate {
 }
 
 async fn compare_run(
+    State(state): State<AppState>,
     Form(form): Form<CompareForm>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
     let a_str = form.a.trim().to_string();
@@ -548,9 +557,17 @@ async fn compare_run(
         let progress = move |done: usize, total: usize| {
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
-        match compare_folders_with_progress(&a, &b, &progress) {
+        let before = crate::Scanner::cache::lock(&state.cache).stats();
+        match compare_folders_cached(&a, &b, &state.cache, &progress) {
             Ok(cmp) => {
-                let html = render_compare(&cmp, &a_str, &b_str);
+                let after = crate::Scanner::cache::lock(&state.cache).stats();
+                let html = render_compare(
+                    &cmp,
+                    &a_str,
+                    &b_str,
+                    after.reused.saturating_sub(before.reused),
+                    after.computed.saturating_sub(before.computed),
+                );
                 let _ = done_tx.send(Msg::Done(html));
             }
             Err(e) => {
@@ -563,6 +580,7 @@ async fn compare_run(
 }
 
 async fn compare_exif(
+    State(state): State<AppState>,
     Form(form): Form<ExifForm>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
     let originals = parse_paths(&form.originals);
@@ -593,7 +611,16 @@ async fn compare_exif(
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
         progress(0, originals.len());
-        let dated = scan_exif_with_progress(&originals, &progress);
+        let dates = crate::Scanner::cache::creation_dates_cached(&state.cache, &originals, &progress);
+        let dated: Vec<crate::Scanner::compare::DatedOriginal> = originals
+            .iter()
+            .cloned()
+            .zip(dates)
+            .map(|(path, creation_date)| crate::Scanner::compare::DatedOriginal {
+                path,
+                creation_date,
+            })
+            .collect();
         let dates_input = dated
             .iter()
             .map(|d| format!("{}\t{}", to_string(&d.path), d.creation_date))
@@ -748,6 +775,7 @@ async fn reveal(Query(q): Query<RevealQuery>) -> Result<(), (StatusCode, String)
 }
 
 async fn compare_deep(
+    State(state): State<AppState>,
     Form(form): Form<DeepForm>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
     let mut pairs = Vec::new();
@@ -803,7 +831,11 @@ async fn compare_deep(
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
         progress(0, pairs.len());
-        let outcome = deep_scan_pairs_with_progress(&pairs, &progress);
+        let before = crate::Scanner::cache::lock(&state.cache).stats();
+        let outcome = deep_scan_pairs_cached(&pairs, &state.cache, &progress);
+        let after = crate::Scanner::cache::lock(&state.cache).stats();
+        let cache_reused = after.reused.saturating_sub(before.reused);
+        let cache_computed = after.computed.saturating_sub(before.computed);
 
         // False positives (b side) join the originals list.
         let mut originals: Vec<String> = parse_paths(&originals_input)
@@ -827,6 +859,8 @@ async fn compare_deep(
             &format,
             valid_count,
             &b_root,
+            cache_reused,
+            cache_computed,
         );
         let _ = done_tx.send(Msg::Done(html));
     });
@@ -841,6 +875,8 @@ fn render_deep_scan(
     format: &str,
     valid_count: usize,
     b_root: &str,
+    cache_reused: usize,
+    cache_computed: usize,
 ) -> String {
     let removed: Vec<DeepPairView> = outcome
         .removed
@@ -860,6 +896,8 @@ fn render_deep_scan(
         .join("\n");
 
     let tpl = DeepScanTemplate {
+        cache_reused,
+        cache_computed,
         checked: outcome.checked,
         kept: outcome.kept,
         covered: outcome.covered,
@@ -883,6 +921,7 @@ async fn verify_form() -> VerifyFormTemplate {
 }
 
 async fn verify_run(
+    State(state): State<AppState>,
     Form(form): Form<VerifyForm>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
     let root_str = form.root.trim().to_string();
@@ -900,7 +939,7 @@ async fn verify_run(
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
         progress(0, 0);
-        match verify_tree_dates_with_progress(&root, &progress) {
+        match verify_tree_dates_cached(&root, &state.cache, &progress) {
             Ok(outcome) => {
                 let html = render_verify(&outcome, &root_str);
                 let _ = done_tx.send(Msg::Done(html));
@@ -1020,6 +1059,35 @@ fn render_purgatory(
     tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
 }
 
+#[derive(serde::Deserialize)]
+struct CacheStatusQuery {
+    path: String,
+}
+
+#[derive(serde::Serialize)]
+struct CacheStatus {
+    cached_files: usize,
+    shallow: usize,
+    deep: usize,
+    exif: usize,
+}
+
+/// What the queried tree already has cached, layer by layer — powers the
+/// "cached" hints next to the path fields.
+async fn cache_status(
+    State(state): State<AppState>,
+    Query(query): Query<CacheStatusQuery>,
+) -> Json<CacheStatus> {
+    let coverage = crate::Scanner::cache::lock(&state.cache)
+        .branch_coverage(Path::new(query.path.trim()));
+    Json(CacheStatus {
+        cached_files: coverage.files,
+        shallow: coverage.shallow,
+        deep: coverage.deep,
+        exif: coverage.exif,
+    })
+}
+
 async fn organize_form() -> OrganizeFormTemplate {
     OrganizeFormTemplate {
         title: "DeDupe2",
@@ -1028,6 +1096,7 @@ async fn organize_form() -> OrganizeFormTemplate {
 }
 
 async fn organize_scan(
+    State(state): State<AppState>,
     Form(form): Form<OrganizeForm>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
     let source_str = form.source.trim().to_string();
@@ -1060,7 +1129,20 @@ async fn organize_scan(
             }
         };
         progress(0, files.len());
-        let dated = scan_exif_with_progress(&files, &progress);
+        let before = crate::Scanner::cache::lock(&state.cache).stats();
+        let dates = crate::Scanner::cache::creation_dates_cached(&state.cache, &files, &progress);
+        let after = crate::Scanner::cache::lock(&state.cache).stats();
+        let cache_reused = after.reused.saturating_sub(before.reused);
+        let cache_computed = after.computed.saturating_sub(before.computed);
+        let dated: Vec<crate::Scanner::compare::DatedOriginal> = files
+            .iter()
+            .cloned()
+            .zip(dates)
+            .map(|(path, creation_date)| crate::Scanner::compare::DatedOriginal {
+                path,
+                creation_date,
+            })
+            .collect();
 
         let mut rows: Vec<OrganizeRowView> = Vec::new();
         let mut files_input: Vec<String> = Vec::new();
@@ -1097,6 +1179,8 @@ async fn organize_scan(
             rows_more,
             files_input: files_input.join("\n"),
             dates_input: dates_input.join("\n"),
+            cache_reused,
+            cache_computed,
         };
         let html = tpl.render().unwrap_or_else(|e| format!("render error: {e}"));
         let _ = done_tx.send(Msg::Done(html));
@@ -1172,6 +1256,7 @@ async fn organize_run(
 }
 
 async fn verify_rehome(
+    State(state): State<AppState>,
     Form(form): Form<RehomeForm>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
     let mut mismatches: Vec<(PathBuf, String)> = Vec::new();
@@ -1213,7 +1298,7 @@ async fn verify_rehome(
         let outcome = rehome_verified(&plans, &progress);
 
         // Prove it: re-verify the tree after the re-home.
-        let reverified = match verify_tree_dates_with_progress(&root, &progress) {
+        let reverified = match verify_tree_dates_cached(&root, &state.cache, &progress) {
             Ok(v) => v,
             Err(e) => {
                 let _ = done_tx.send(Msg::Error(e.to_string()));
@@ -1259,6 +1344,7 @@ async fn sets_form() -> SetsFormTemplate {
 }
 
 async fn sets_run(
+    State(state): State<AppState>,
     Form(form): Form<SetForm>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
     let a_str = form.a.trim().to_string();
@@ -1279,9 +1365,13 @@ async fn sets_run(
         let progress = move |done: usize, total: usize| {
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
-        match compare_sets_with_progress(&a, &candidates, &progress) {
+        let before = crate::Scanner::cache::lock(&state.cache).stats();
+        match compare_sets_cached(&a, &candidates, &state.cache, &progress) {
             Ok(cmp) => {
-                let html = render_sets(&cmp, &a_str);
+                let after = crate::Scanner::cache::lock(&state.cache).stats();
+                let cache_reused = after.reused.saturating_sub(before.reused);
+                let cache_computed = after.computed.saturating_sub(before.computed);
+                let html = render_sets(&cmp, &a_str, cache_reused, cache_computed);
                 let _ = done_tx.send(Msg::Done(html));
             }
             Err(e) => {
@@ -1293,7 +1383,7 @@ async fn sets_run(
     Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
 }
 
-fn render_sets(cmp: &SetComparison, a: &str) -> String {
+fn render_sets(cmp: &SetComparison, a: &str, cache_reused: usize, cache_computed: usize) -> String {
     let candidates: Vec<SetTreeRowView> = cmp
         .candidates
         .iter()
@@ -1309,6 +1399,8 @@ fn render_sets(cmp: &SetComparison, a: &str) -> String {
 
     let tpl = SetsResultTemplate {
         a: a.to_string(),
+        cache_reused,
+        cache_computed,
         a_total: cmp.a_total,
         a_unique: cmp.a_unique,
         a_unreadable: cmp.a_unreadable,
@@ -1319,7 +1411,13 @@ fn render_sets(cmp: &SetComparison, a: &str) -> String {
     tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
 }
 
-fn render_compare(cmp: &Comparison, a: &str, b: &str) -> String {
+fn render_compare(
+    cmp: &Comparison,
+    a: &str,
+    b: &str,
+    cache_reused: usize,
+    cache_computed: usize,
+) -> String {
     let mut dup_rows: Vec<DupRowView> = Vec::new();
     for g in &cmp.duplicates {
         for p in &g.a {
@@ -1404,6 +1502,8 @@ fn render_compare(cmp: &Comparison, a: &str, b: &str) -> String {
     let tpl = CompareResultTemplate {
         a: a.to_string(),
         b: b.to_string(),
+        cache_reused,
+        cache_computed,
         a_rows,
         a_more,
         dup_rows,
@@ -1471,7 +1571,19 @@ fn render_consolidate_done(outcome: &ConsolidationOutcome, purgatory: &Path) -> 
     tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
 }
 
+/// Server state: the hierarchical scan cache is shared by every request for
+/// the lifetime of the process, so repeated scans reuse what earlier passes
+/// already computed.
+#[derive(Clone, Default)]
+pub struct AppState {
+    pub cache: std::sync::Arc<std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
+}
+
 pub fn app() -> Router {
+    app_with_state(AppState::default())
+}
+
+pub fn app_with_state(state: AppState) -> Router {
     Router::new()
         .route("/", get(consolidate_form))
         .route("/consolidate", get(consolidate_form))
@@ -1492,9 +1604,11 @@ pub fn app() -> Router {
         .route("/organize/scan", post(organize_scan))
         .route("/organize/run", post(organize_run))
         .route("/compare/purgatory", post(compare_purgatory))
+        .route("/cache-status", get(cache_status))
         .nest_service("/static", ServeDir::new("static"))
         // Compare forms post the full originals list back to the server (one
         // path per line) — several MB for large candidate trees. NOTE: this
         // layer must come after the routes or it applies to nothing.
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
+        .with_state(state)
 }

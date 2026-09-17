@@ -607,3 +607,266 @@ fn js_progress_bindings_match_every_page_that_uses_them() {
         }
     }
 }
+
+#[tokio::test]
+async fn repeated_compare_indicates_cache_reuse() {
+    use dedupe2::web::{app_with_state, AppState};
+
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let img = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/TestImages/jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
+    std::fs::write(a.join("one.jpg"), &img).unwrap();
+    std::fs::write(b.join("one.jpg"), &img).unwrap();
+    std::fs::write(b.join("two.jpg"), b"another photo").unwrap();
+
+    let state = AppState::default();
+    let body = format!(
+        "a={}&b={}",
+        urlencode(&a.display().to_string()),
+        urlencode(&b.display().to_string())
+    );
+
+    // First run computes; second run must report the reused cache.
+    let res = app_with_state(state.clone())
+        .oneshot(form_request("/compare/run", body.clone()))
+        .await
+        .unwrap();
+    let first = body_string(res.into_body()).await;
+    assert!(!first.contains("reused / 0 computed"), "first run computes: {first}");
+
+    let res = app_with_state(state)
+        .oneshot(form_request("/compare/run", body))
+        .await
+        .unwrap();
+    let second = body_string(res.into_body()).await;
+    assert!(
+        second.contains("cache:") && second.contains("reused / 0 computed"),
+        "second run must show a fully reused cache: {second}"
+    );
+}
+
+#[tokio::test]
+async fn sets_reuses_the_compare_folders_cache() {
+    use dedupe2::web::{app_with_state, AppState};
+
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let img = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/TestImages/jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
+    std::fs::write(a.join("one.jpg"), &img).unwrap();
+    std::fs::write(b.join("one.jpg"), &img).unwrap();
+    std::fs::write(b.join("two.jpg"), sample_bytes()).unwrap();
+
+    let state = AppState::default();
+
+    // Compare folders first: this hashes A and B.
+    let res = app_with_state(state.clone())
+        .oneshot(form_request(
+            "/compare/run",
+            format!(
+                "a={}&b={}",
+                urlencode(&a.display().to_string()),
+                urlencode(&b.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let _ = body_string(res.into_body()).await;
+
+    // Compare sets over the same trees must reuse every hash.
+    let res = app_with_state(state)
+        .oneshot(form_request(
+            "/sets/run",
+            format!(
+                "a={}&candidates={}",
+                urlencode(&a.display().to_string()),
+                urlencode(&b.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(
+        html.contains("cache:") && html.contains("reused / 0 computed"),
+        "sets must reuse the compare-folders cache: {html}"
+    );
+}
+
+fn sample_bytes() -> Vec<u8> {
+    std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/TestImages/jpg-dupe-diff-size/IMG_2571.jpg"),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn cache_status_reports_scanned_trees() {
+    use dedupe2::web::{app_with_state, AppState};
+
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let img = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/TestImages/jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
+    std::fs::write(a.join("one.jpg"), &img).unwrap();
+    std::fs::write(b.join("one.jpg"), &img).unwrap();
+
+    let state = AppState::default();
+
+    // Nothing scanned yet.
+    let res = app_with_state(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/cache-status?path={}",
+                    urlencode(&a.display().to_string())
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"cached_files\":0"), "{body}");
+
+    // Scan, then the tree reports cached coverage. The SSE body must be
+    // drained so the scan is actually finished before asking.
+    let res = app_with_state(state.clone())
+        .oneshot(form_request(
+            "/compare/run",
+            format!(
+                "a={}&b={}",
+                urlencode(&a.display().to_string()),
+                urlencode(&b.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let _ = body_string(res.into_body()).await;
+
+    let res = app_with_state(state)
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/cache-status?path={}",
+                    urlencode(&a.display().to_string())
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("\"cached_files\":1"), "{body}");
+}
+
+#[tokio::test]
+async fn cache_status_reports_each_layer_after_scans() {
+    use dedupe2::web::{app_with_state, AppState};
+
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let img = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/TestImages/jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
+    std::fs::write(a.join("one.jpg"), &img).unwrap();
+    std::fs::write(b.join("one.jpg"), &img).unwrap();
+
+    let state = AppState::default();
+    let drain = |res: axum::response::Response| async move { body_string(res.into_body()).await };
+
+    let status_for = |state: AppState, path: std::path::PathBuf| async move {
+        let res = app_with_state(state)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/cache-status?path={}", urlencode(&path.display().to_string())))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        body_string(res.into_body()).await
+    };
+
+    // Compare: shallow layer only.
+    let res = app_with_state(state.clone())
+        .oneshot(form_request(
+            "/compare/run",
+            format!(
+                "a={}&b={}",
+                urlencode(&a.display().to_string()),
+                urlencode(&b.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let _ = drain(res).await;
+    let body = status_for(state.clone(), a.clone()).await;
+    assert!(body.contains("\"shallow\":1"), "{body}");
+    assert!(body.contains("\"deep\":0"), "{body}");
+    assert!(body.contains("\"exif\":0"), "{body}");
+
+    // Deep scan adds the deep layer.
+    let res = app_with_state(state.clone())
+        .oneshot(form_request(
+            "/compare/deep",
+            format!(
+                "pairs={}&originals=&destination={}",
+                urlencode(&format!(
+                    "{}\t{}",
+                    a.join("one.jpg").display(),
+                    b.join("one.jpg").display()
+                )),
+                urlencode(&a.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let _ = drain(res).await;
+    let body = status_for(state.clone(), a.clone()).await;
+    assert!(body.contains("\"shallow\":1"), "{body}");
+    assert!(body.contains("\"deep\":1"), "{body}");
+    assert!(body.contains("\"exif\":0"), "{body}");
+
+    // EXIF pass adds the date layer.
+    let res = app_with_state(state.clone())
+        .oneshot(form_request(
+            "/compare/exif",
+            format!(
+                "originals={}&a={}",
+                urlencode(&a.join("one.jpg").display().to_string()),
+                urlencode(&a.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let _ = drain(res).await;
+    let body = status_for(state, a.clone()).await;
+    assert!(body.contains("\"shallow\":1"), "{body}");
+    assert!(body.contains("\"deep\":1"), "{body}");
+    assert!(body.contains("\"exif\":1"), "{body}");
+}
