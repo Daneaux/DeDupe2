@@ -19,7 +19,7 @@
       const total = Number(parts[1]);
       const pct = total > 0 ? Math.round((done / total) * 100) : 0;
       fill.style.width = pct + "%";
-      text.textContent = "Working " + done + " / " + total;
+      text.textContent = (phaseLabel ? phaseLabel + " " : "") + done + " / " + total;
     } else if (event === "done") {
       progress.hidden = true;
       result.innerHTML = body;
@@ -30,10 +30,13 @@
     }
   }
 
-  async function run(url, form) {
+  let phaseLabel = "";
+
+  async function run(url, form, label) {
+    phaseLabel = label || "";
     progress.hidden = false;
     fill.style.width = "0%";
-    text.textContent = "Working…";
+    text.textContent = (phaseLabel ? phaseLabel + " " : "") + "working…";
     text.classList.remove("error");
     result.innerHTML = "";
 
@@ -66,14 +69,28 @@
     }
   }
 
+  // Compact "…/parent/leaf" form of a path for progress labels.
+  function shortPath(value) {
+    if (!value) return "";
+    const clean = String(value).trim().replace(/\/+$/, "");
+    const parts = clean.split("/").filter(Boolean);
+    if (parts.length === 0) return "";
+    return "…/" + parts.slice(-2).join("/");
+  }
+
+  function fieldValue(form, name) {
+    const el = form.querySelector('[name="' + name + '"]');
+    return el ? el.value : "";
+  }
+
   document.addEventListener("submit", function (e) {
     const form = e.target;
     if (form.id === "consolidate-form") {
       e.preventDefault();
-      run("/consolidate/preview", form);
+      run("/consolidate/preview", form, shortPath(fieldValue(form, "dir")));
     } else if (form.id === "consolidate-run-form") {
       e.preventDefault();
-      run("/consolidate/run", form);
+      run("/consolidate/run", form, shortPath(fieldValue(form, "dir")));
     }
   });
 })();

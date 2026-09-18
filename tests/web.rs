@@ -53,10 +53,14 @@ async fn compare_run_streams_progress_then_done() {
     let b = root.path().join("b");
     std::fs::create_dir_all(&a).unwrap();
     std::fs::create_dir_all(&b).unwrap();
-    let a_file = write_junk(&a, "photo1.jpg");
+    let _a_file = write_junk(&a, "photo1.jpg");
     let _b_file = write_junk(&b, "photo2.jpg");
 
-    let body = format!("a={}&b={}", urlencode(&a_file), urlencode(&b.display().to_string()));
+    let body = format!(
+        "a={}&b={}",
+        urlencode(&a.display().to_string()),
+        urlencode(&b.display().to_string())
+    );
     let res = app().oneshot(form_request("/compare/run", body)).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let content_type = res.headers().get("content-type").unwrap().to_str().unwrap();
@@ -589,6 +593,7 @@ fn js_progress_bindings_match_every_page_that_uses_them() {
         ("templates/sets.html", "sets"),
         ("templates/verify.html", "verify"),
         ("templates/organize.html", "organize"),
+        ("templates/similar.html", "similar"),
     ];
     for (template, prefix) in pages {
         let html = std::fs::read_to_string(
@@ -869,4 +874,234 @@ async fn cache_status_reports_each_layer_after_scans() {
     assert!(body.contains("\"shallow\":1"), "{body}");
     assert!(body.contains("\"deep\":1"), "{body}");
     assert!(body.contains("\"exif\":1"), "{body}");
+}
+
+#[tokio::test]
+async fn similar_tab_finds_scaled_copies_and_offers_purgatory() {
+    let root = tempfile::tempdir().unwrap();
+    let tree = root.path().join("library");
+    std::fs::create_dir_all(&tree).unwrap();
+
+    let original = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+    let keeper = tree.join("original.jpg");
+    std::fs::copy(&original, &keeper).unwrap();
+
+    // A smaller, recompressed copy of the same picture.
+    let img = image::open(&original).unwrap();
+    let small = img.resize_exact(
+        (img.width() as f32 * 0.5) as u32,
+        (img.height() as f32 * 0.5) as u32,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let candidate = tree.join("small.jpg");
+    small.save_with_format(&candidate, image::ImageFormat::Jpeg).unwrap();
+
+    let res = app()
+        .oneshot(form_request(
+            "/similar/run",
+            format!("root={}", urlencode(&tree.display().to_string())),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+
+    assert!(html.contains("Similar Images"), "{html}");
+    assert!(html.contains("original.jpg"), "keeper listed: {html}");
+    assert!(html.contains("small.jpg"), "candidate listed: {html}");
+    assert!(
+        html.contains("Move 1 candidates to purgatory"),
+        "purgatory form offered: {html}"
+    );
+    // The purgatory form carries the candidate.
+    let marker = "name=\"files\" value=\"";
+    let start = html.find(marker).expect("files input") + marker.len();
+    let end = start + html[start..].find('"').unwrap();
+    assert!(html[start..end].contains("small.jpg"), "{}", &html[start..end]);
+}
+
+#[tokio::test]
+async fn similar_tab_compare_mode_matches_between_two_trees() {
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("library");
+    let b = root.path().join("candidate");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+
+    let original = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+    let keeper = a.join("original.jpg");
+    std::fs::copy(&original, &keeper).unwrap();
+
+    // B holds a half-size recompressed copy of A's original.
+    let img = image::open(&original).unwrap();
+    let small = img.resize_exact(
+        (img.width() as f32 * 0.5) as u32,
+        (img.height() as f32 * 0.5) as u32,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let candidate = b.join("small.jpg");
+    small.save_with_format(&candidate, image::ImageFormat::Jpeg).unwrap();
+
+    let res = app()
+        .oneshot(form_request(
+            "/similar/run",
+            format!(
+                "root={}&compare={}",
+                urlencode(&a.display().to_string()),
+                urlencode(&b.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+
+    assert!(html.contains("Similar Images — A vs B"), "{html}");
+    assert!(html.contains("original.jpg"), "A side listed: {html}");
+    assert!(html.contains("small.jpg"), "B side listed: {html}");
+    assert!(
+        html.contains("Move 1 B copies to purgatory"),
+        "removable B copy offered: {html}"
+    );
+    let marker = "name=\"files\" value=\"";
+    let start = html.find(marker).expect("files input") + marker.len();
+    let end = start + html[start..].find('"').unwrap();
+    assert!(
+        html[start..end].contains("small.jpg"),
+        "B candidate in purgatory form: {}",
+        &html[start..end]
+    );
+}
+
+#[tokio::test]
+async fn settings_tab_shows_and_moves_the_cache() {
+    use dedupe2::web::{app_with_state, AppState};
+    use dedupe2::Scanner::cache::ScanCache;
+
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let img = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/TestImages/jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
+    std::fs::write(a.join("one.jpg"), &img).unwrap();
+    std::fs::write(b.join("one.jpg"), &img).unwrap();
+
+    let state = AppState::default();
+
+    // The settings page renders.
+    let res = app_with_state(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/settings")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("Settings"), "{html}");
+    assert!(html.contains("Cache file path"), "{html}");
+
+    // Learn something so the cache has content.
+    let res = app_with_state(state.clone())
+        .oneshot(form_request(
+            "/compare/run",
+            format!(
+                "a={}&b={}",
+                urlencode(&a.display().to_string()),
+                urlencode(&b.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let _ = body_string(res.into_body()).await;
+
+    // Move the cache to a new file via the settings form.
+    let new_cache = root.path().join("store/new-cache.bin");
+    let res = app_with_state(state.clone())
+        .oneshot(form_request(
+            "/settings/save",
+            format!("cache_path={}", urlencode(&new_cache.display().to_string())),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("Cache moved to"), "{html}");
+    assert_eq!(state.cache_path(), Some(new_cache.clone()));
+    assert!(new_cache.exists(), "cache file written at the new location");
+
+    // The learned knowledge travelled with it.
+    let loaded = ScanCache::load(&new_cache);
+    assert!(loaded.stats().files >= 1, "cache content preserved");
+
+    // Clearing wipes both memory and file.
+    let res = app_with_state(state.clone())
+        .oneshot(form_request("/settings/clear", String::new()))
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("Cache cleared"), "{html}");
+    assert!(!new_cache.exists(), "cache file deleted");
+    assert_eq!(
+        dedupe2::Scanner::cache::lock(&state.cache).stats().files,
+        0
+    );
+}
+
+#[tokio::test]
+async fn scans_reject_nonexistent_trees_up_front() {
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    let missing = root.path().join("does/not/exist");
+
+    // Compare: bad B fails before any scanning happens.
+    let res = app()
+        .oneshot(form_request(
+            "/compare/run",
+            format!(
+                "a={}&b={}",
+                urlencode(&real.display().to_string()),
+                urlencode(&missing.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("not a directory"), "{body}");
+
+    // Similar compare mode: the second tree is validated up front too.
+    let res = app()
+        .oneshot(form_request(
+            "/similar/run",
+            format!(
+                "root={}&compare={}",
+                urlencode(&real.display().to_string()),
+                urlencode(&missing.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let body = body_string(res.into_body()).await;
+    assert!(body.contains("not a directory"), "{body}");
+
+    // Verify: same.
+    let res = app()
+        .oneshot(form_request(
+            "/verify/run",
+            format!("root={}", urlencode(&missing.display().to_string())),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }

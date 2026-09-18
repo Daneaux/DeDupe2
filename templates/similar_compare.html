@@ -1,0 +1,73 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Similar Images — A vs B</h2>
+      <span class="subtitle">A: {{ a_root }} · B: {{ b_root }}{% if cache_reused > 0 || cache_computed > 0 %} · cache: {{ cache_reused }} reused / {{ cache_computed }} computed{% endif %}</span>
+    </div>
+  </div>
+
+  <div class="merge-summary">
+    <div class="summary-stat">
+      <span class="summary-value">{{ scanned_a }}</span>
+      <span class="summary-label">A files ({{ lossy_a }} lossy hashed)</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ scanned_b }}</span>
+      <span class="summary-label">B files ({{ lossy_b }} lossy hashed)</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ match_count }}</span>
+      <span class="summary-label">similar matches</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ removable_count }}</span>
+      <span class="summary-label">B copies safe to remove</span>
+    </div>
+  </div>
+
+  {% if match_count == 0 %}
+  <p class="placeholder">No similar images between A and B.</p>
+  {% else %}
+  <div class="table-scroll">
+    <table class="compare-table">
+      <thead><tr><th>A (kept when bigger)</th><th>B</th><th>Verdict</th><th>Distance</th><th>A px</th><th>B px</th><th>A size</th><th>B size</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="path clickable" data-reveal="{{ r.a }}">{{ r.a }}</td>
+          <td class="path clickable" data-reveal="{{ r.b }}">{{ r.b }}</td>
+          <td>
+            {% if r.removable %}<span class="badge badge-dirty">{{ r.verdict }}</span>{% else %}<span class="badge badge-ok">{{ r.verdict }}</span>{% endif %}
+          </td>
+          <td>{{ r.distance }}</td>
+          <td>{{ r.a_pixels }}</td>
+          <td>{{ r.b_pixels }}</td>
+          <td>{{ r.a_bytes }}</td>
+          <td>{{ r.b_bytes }}</td>
+        </tr>
+        {% endfor %}
+        {% if rows_more > 0 %}
+        <tr class="more-row"><td colspan="8" class="muted">… {{ rows_more }} more not shown</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <form method="post" action="/compare/purgatory" id="purgatory-form" class="merge-form">
+    <input type="hidden" name="files" value="{{ candidates_input }}" />
+    <input type="hidden" name="b_root" value="{{ b_root }}" />
+    <label class="field">
+      <span>Purgatory folder</span>
+      <input type="text" name="purgatory" placeholder="/path/to/purgatory" />
+      <span class="hint">Moves the flagged B copies out of the tree, keeping their folder layout. The A copies stay untouched.</span>
+    </label>
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-small btn-secondary" {% if removable_count == 0 %}disabled{% endif %}>Move {{ removable_count }} B copies to purgatory</button>
+    </div>
+  </form>
+  {% endif %}
+
+  <div class="toolbar-actions">
+    <a class="btn btn-secondary" href="/similar">Back to similar</a>
+  </div>
+</section>

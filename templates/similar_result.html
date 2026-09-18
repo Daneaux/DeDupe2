@@ -1,0 +1,75 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Similar Images</h2>
+      <span class="subtitle">{{ root }}{% if cache_reused > 0 || cache_computed > 0 %} · cache: {{ cache_reused }} reused / {{ cache_computed }} computed{% endif %}</span>
+    </div>
+  </div>
+
+  <div class="merge-summary">
+    <div class="summary-stat">
+      <span class="summary-value">{{ scanned }}</span>
+      <span class="summary-label">files scanned</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ lossy }}</span>
+      <span class="summary-label">lossy images hashed</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ group_count }}</span>
+      <span class="summary-label">similar groups</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ candidate_count }}</span>
+      <span class="summary-label">smaller copies found</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ removable_count }}</span>
+      <span class="summary-label">removal candidates</span>
+    </div>
+  </div>
+
+  {% if group_count == 0 %}
+  <p class="placeholder">No near-duplicates found.</p>
+  {% else %}
+  <div class="table-scroll">
+    <table class="compare-table">
+      <thead><tr><th>Keep (biggest file)</th><th>Copy</th><th>Verdict</th><th>Distance</th><th>Keep px</th><th>Copy px</th><th>Keep size</th><th>Copy size</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="path clickable" data-reveal="{{ r.keeper }}">{{ r.keeper }}</td>
+          <td class="path clickable" data-reveal="{{ r.candidate }}">{{ r.candidate }}</td>
+          <td><span class="badge badge-dirty">remove</span></td>
+          <td>{{ r.distance }}</td>
+          <td>{{ r.keeper_pixels }}</td>
+          <td>{{ r.candidate_pixels }}</td>
+          <td>{{ r.keeper_bytes }}</td>
+          <td>{{ r.candidate_bytes }}</td>
+        </tr>
+        {% endfor %}
+        {% if rows_more > 0 %}
+        <tr class="more-row"><td colspan="6" class="muted">… {{ rows_more }} more not shown</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+
+  <form method="post" action="/compare/purgatory" id="purgatory-form" class="merge-form">
+    <input type="hidden" name="files" value="{{ candidates_input }}" />
+    <input type="hidden" name="b_root" value="{{ root }}" />
+    <label class="field">
+      <span>Purgatory folder</span>
+      <input type="text" name="purgatory" placeholder="/path/to/purgatory" />
+      <span class="hint">Moves the smaller copies out of the tree, keeping their folder layout — copy &rarr; byte-verify &rarr; remove; collisions renamed; empty folders pruned. The keeper stays.</span>
+    </label>
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-small btn-secondary" {% if removable_count == 0 %}disabled{% endif %}>Move {{ removable_count }} candidates to purgatory</button>
+    </div>
+  </form>
+  {% endif %}
+
+  <div class="toolbar-actions">
+    <a class="btn btn-secondary" href="/similar">Back to similar</a>
+  </div>
+</section>

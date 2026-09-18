@@ -431,12 +431,143 @@ fn branch_coverage_reports_each_layer() {
     assert_eq!(cov.deep, 0);
     assert_eq!(cov.exif, 0);
 
-    // Deep data on one file, exif dates on both.
+    // Deep data on one file, phash on one, exif dates on both.
     cache.full_content_hash(&a).unwrap();
+    cache.phash(&a);
     cache.store_creation_date(&a, dedupe2::exif::CreationDate::DateCreated("2020-01-01".into()));
     cache.store_creation_date(&b, dedupe2::exif::CreationDate::Unknown);
     let cov = cache.branch_coverage(root.path());
     assert_eq!(cov.shallow, 2);
     assert_eq!(cov.deep, 1);
+    assert_eq!(cov.phash, 1);
     assert_eq!(cov.exif, 2, "a cached Unknown still counts as resolved");
+
+    // phash is reused like every other layer.
+    let computed_before = cache.stats().computed;
+    cache.phash(&a);
+    assert_eq!(cache.stats().computed, computed_before, "phash served from cache");
+    assert_eq!(cache.stats().reused, 1);
+}
+
+#[test]
+fn cache_round_trips_through_the_persisted_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("photo.jpg");
+    std::fs::write(&file, sample("jpg-exif-mod/image1.JPG")).unwrap();
+    let store = dir.path().join("cache.bin");
+
+    let mut cache = ScanCache::new();
+    let shallow = cache.shallow_hash(&file, 64 * 1024);
+    let full = cache.full_content_hash(&file).unwrap();
+    let phash = cache.phash(&file).unwrap();
+    cache.store_creation_date(
+        &file,
+        dedupe2::exif::CreationDate::DateCreated("2020-05-04 03:02:01".into()),
+    );
+    assert!(cache.dirty());
+    cache.save(&store).unwrap();
+    assert!(!cache.dirty(), "save clears the dirty flag");
+
+    // A fresh process loads the snapshot and gets everything back.
+    let mut loaded = ScanCache::load(&store);
+    assert_eq!(loaded.stats().files, 1);
+    let before = loaded.stats();
+    assert_eq!(loaded.shallow_hash(&file, 64 * 1024), shallow);
+    assert_eq!(loaded.full_content_hash(&file).unwrap(), full);
+    assert_eq!(loaded.phash(&file).unwrap(), phash);
+    assert_eq!(
+        loaded.creation_date(&file),
+        Some(dedupe2::exif::CreationDate::DateCreated("2020-05-04 03:02:01".into()))
+    );
+    let after = loaded.stats();
+    assert_eq!(after.computed, before.computed, "nothing recomputed after load");
+    assert_eq!(after.reused, before.reused + 4, "every layer served from the snapshot");
+}
+
+#[test]
+fn loaded_entries_still_validate_against_the_filesystem() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("photo.jpg");
+    std::fs::write(&file, sample("jpg-exif-mod/image1.JPG")).unwrap();
+    let store = dir.path().join("cache.bin");
+
+    let mut cache = ScanCache::new();
+    cache.shallow_hash(&file, 64 * 1024);
+    cache.save(&store).unwrap();
+
+    // The file changes while the server is down.
+    std::fs::write(&file, b"a different and longer payload").unwrap();
+
+    let mut loaded = ScanCache::load(&store);
+    let before = loaded.stats();
+    let (hash, _) = loaded.shallow_hash(&file, 64 * 1024);
+    let after = loaded.stats();
+    assert_eq!(after.computed, before.computed + 1, "stale entry recomputed");
+    assert_ne!(hash, 0);
+}
+
+#[test]
+fn corrupt_cache_files_load_as_empty_and_usable() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("cache.bin");
+    std::fs::write(&store, b"definitely not a bincode snapshot").unwrap();
+
+    let mut cache = ScanCache::load(&store);
+    assert_eq!(cache.stats().files, 0);
+
+    let file = dir.path().join("photo.jpg");
+    std::fs::write(&file, sample("jpg-exif-mod/image1.JPG")).unwrap();
+    cache.shallow_hash(&file, 64 * 1024);
+    assert_eq!(cache.stats().files, 1, "cache still works after a corrupt load");
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_paths_survive_persistence() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let name = OsStr::from_bytes(b"photo-\xff\xfe.jpg");
+    let file = dir.path().join(name);
+    // APFS rejects non-UTF8 names outright (EILSEQ), so on such volumes the
+    // scenario cannot exist; the serde derive keeps it lossless where it can.
+    if std::fs::write(&file, sample("jpg-exif-mod/image1.JPG")).is_err() {
+        eprintln!("filesystem rejects non-UTF8 names — skipping");
+        return;
+    }
+    let store = dir.path().join("cache.bin");
+
+    let mut cache = ScanCache::new();
+    let expected = cache.shallow_hash(&file, 64 * 1024);
+    cache.save(&store).unwrap();
+
+    let mut loaded = ScanCache::load(&store);
+    assert_eq!(loaded.stats().files, 1, "non-UTF8 path persisted");
+    let before = loaded.stats();
+    assert_eq!(loaded.shallow_hash(&file, 64 * 1024), expected);
+    assert_eq!(loaded.stats().reused, before.reused + 1, "served from the snapshot");
+}
+
+#[test]
+fn settings_round_trip_and_tolerate_corruption() {
+    use dedupe2::web::settings::Settings;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+
+    // Missing file: defaults.
+    assert_eq!(Settings::load_from(&path).cache_path, None);
+
+    let mut settings = Settings::default();
+    settings.cache_path = Some(dir.path().join("cache.bin"));
+    settings.save_to(&path).unwrap();
+    assert_eq!(
+        Settings::load_from(&path).cache_path,
+        Some(dir.path().join("cache.bin"))
+    );
+
+    // Corrupt file: defaults, never an error.
+    std::fs::write(&path, b"not json").unwrap();
+    assert_eq!(Settings::load_from(&path).cache_path, None);
 }

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel" role="tabpanel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Similar Images</h2>
+      <span class="subtitle">Find the same picture saved at different sizes/qualities (lossy same-kind: jpg↔jpg, heic↔heic). Each group keeps the copy with the most pixels; the smaller copies become removal candidates.</span>
+    </div>
+  </div>
+
+  <form method="post" action="/similar/run" id="similar-form">
+    <label class="field">
+      <span>Tree to scan (A)</span>
+      <input type="text" name="root" data-cache-status placeholder="/path/to/library" />
+    </label>
+
+    <label class="field">
+      <span>Compare against (B — optional)</span>
+      <input type="text" name="compare" data-cache-status placeholder="/path/to/candidate tree" />
+      <span class="hint">Leave empty to find near-duplicates within A. With B set, similar images are matched between the trees: B files that are the smaller/upscaled copy of an A file become removal candidates (A is assumed to be the library of record).</span>
+    </label>
+
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary">Find similar</button>
+    </div>
+  </form>
+</section>
+
+<div id="similar-progress" class="merge-progress" hidden>
+  <div class="merge-progress-label" id="similar-progress-text">Working…</div>
+  <div class="merge-progress-track"><div class="merge-progress-fill" id="similar-progress-fill"></div></div>
+</div>
+
+<div id="similar-result"></div>
+
+<script src="/static/compare.js?v=23"></script>
+{% endblock %}

@@ -3,11 +3,14 @@
 //! exposed as `app()` so handler-level tests can drive the full router.
 
 use std::collections::{HashMap, HashSet};
+
+pub mod settings;
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 
 use askama::Template;
 use axum::extract::{DefaultBodyLimit, Form, Query, State};
+use axum::response::Html;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::Json;
@@ -19,6 +22,10 @@ use crate::filemover::{
 use crate::Scanner::compare::{
     compare_folders_cached, compare_sets_cached, deep_scan_pairs_cached, verify_tree_dates_cached,
     Comparison, DupPair, SetComparison, VerifyOutcome,
+};
+use crate::Scanner::similar::{
+    find_similar_between_with_progress, find_similar_with_progress, SimilarCompareOutcome,
+    SimilarOutcome,
 };
 use crate::filemover::{
     destination_for, move_to_purgatory_with_progress, organize_into_destination_with_progress,
@@ -205,6 +212,98 @@ struct OrganizeDoneTemplate {
     failures: Vec<(String, String)>,
 }
 
+#[derive(Template)]
+#[template(path = "settings.html")]
+struct SettingsTemplate {
+    title: &'static str,
+    page: &'static str,
+    cache_path: String,
+    default_cache_path: String,
+    settings_path: String,
+    env_override: bool,
+    cached_files: usize,
+    cache_disk_bytes: Option<u64>,
+    cache_dirty: bool,
+    message: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct CachePathForm {
+    cache_path: String,
+}
+
+#[derive(Template)]
+#[template(path = "similar.html")]
+struct SimilarFormTemplate {
+    title: &'static str,
+    page: &'static str,
+}
+
+#[derive(serde::Deserialize)]
+struct SimilarForm {
+    root: String,
+    /// Optional second tree: when set, similar images are matched BETWEEN
+    /// the two trees instead of within one.
+    compare: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "similar_compare.html")]
+struct SimilarCompareTemplate {
+    a_root: String,
+    b_root: String,
+    cache_reused: usize,
+    cache_computed: usize,
+    scanned_a: usize,
+    scanned_b: usize,
+    lossy_a: usize,
+    lossy_b: usize,
+    match_count: usize,
+    removable_count: usize,
+    rows: Vec<SimilarMatchRowView>,
+    rows_more: usize,
+    candidates_input: String,
+}
+
+struct SimilarMatchRowView {
+    pub a: String,
+    pub b: String,
+    pub distance: u32,
+    pub verdict: &'static str,
+    pub removable: bool,
+    pub a_pixels: u64,
+    pub b_pixels: u64,
+    pub a_bytes: u64,
+    pub b_bytes: u64,
+}
+
+#[derive(Template)]
+#[template(path = "similar_result.html")]
+struct SimilarResultTemplate {
+    root: String,
+    cache_reused: usize,
+    cache_computed: usize,
+    scanned: usize,
+    lossy: usize,
+    group_count: usize,
+    candidate_count: usize,
+    removable_count: usize,
+    rows: Vec<SimilarRowView>,
+    rows_more: usize,
+    /// Removable candidates, one per line — the purgatory move form.
+    candidates_input: String,
+}
+
+struct SimilarRowView {
+    pub keeper: String,
+    pub candidate: String,
+    pub distance: u32,
+    pub keeper_pixels: u64,
+    pub candidate_pixels: u64,
+    pub keeper_bytes: u64,
+    pub candidate_bytes: u64,
+}
+
 #[derive(serde::Deserialize)]
 struct PurgatoryForm {
     files: String,
@@ -322,6 +421,20 @@ struct CopyForm {
     /// `path<TAB>date` lines carried from the EXIF scan so the transfer does
     /// not re-extract metadata for every file.
     dates: Option<String>,
+}
+
+/// Input trees must exist before a scan starts — otherwise the failure
+/// surfaces only after the (long) scan of the other tree (or worse, silently
+/// scans nothing thanks to the resilient collector).
+fn require_dir(path: &Path) -> Result<(), (StatusCode, String)> {
+    if path.is_dir() {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::BAD_REQUEST,
+            format!("not a directory: {}", path.display()),
+        ))
+    }
 }
 
 /// Resolve the transfer dates for a set of paths from the form's carried
@@ -548,6 +661,8 @@ async fn compare_run(
     }
     let a = PathBuf::from(&a_str);
     let b = PathBuf::from(&b_str);
+    require_dir(&a)?;
+    require_dir(&b)?;
 
     let (tx, rx) = mpsc::unbounded_channel::<Msg>();
     let progress_tx = tx.clone();
@@ -557,9 +672,15 @@ async fn compare_run(
         let progress = move |done: usize, total: usize| {
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
+        tracing::info!("compare scan: {} vs {}", a.display(), b.display());
         let before = crate::Scanner::cache::lock(&state.cache).stats();
         match compare_folders_cached(&a, &b, &state.cache, &progress) {
             Ok(cmp) => {
+                tracing::info!(
+                    "compare scan finished: {} duplicates, {} originals",
+                    cmp.duplicates.len(),
+                    cmp.b_only.len()
+                );
                 let after = crate::Scanner::cache::lock(&state.cache).stats();
                 let html = render_compare(
                     &cmp,
@@ -929,6 +1050,7 @@ async fn verify_run(
         return Err((StatusCode::BAD_REQUEST, "provide the destination tree".into()));
     }
     let root = PathBuf::from(&root_str);
+    require_dir(&root)?;
 
     let (tx, rx) = mpsc::unbounded_channel::<Msg>();
     let progress_tx = tx.clone();
@@ -1015,6 +1137,7 @@ async fn compare_purgatory(
     if b_root.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "candidate tree root is missing".into()));
     }
+    require_dir(Path::new(&b_root))?;
 
     let (tx, rx) = mpsc::unbounded_channel::<Msg>();
     let progress_tx = tx.clone();
@@ -1069,6 +1192,7 @@ struct CacheStatus {
     cached_files: usize,
     shallow: usize,
     deep: usize,
+    phash: usize,
     exif: usize,
 }
 
@@ -1084,8 +1208,287 @@ async fn cache_status(
         cached_files: coverage.files,
         shallow: coverage.shallow,
         deep: coverage.deep,
+        phash: coverage.phash,
         exif: coverage.exif,
     })
+}
+
+fn render_settings(state: &AppState, message: Option<String>) -> String {
+    let cache_path = state.cache_path();
+    let cached_files = crate::Scanner::cache::lock(&state.cache).stats().files;
+    let cache_dirty = crate::Scanner::cache::lock(&state.cache).dirty();
+    let cache_disk_bytes = cache_path
+        .as_deref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len());
+    let default_path = crate::Scanner::cache::default_cache_path();
+    let tpl = SettingsTemplate {
+        title: "DeDupe2",
+        page: "settings",
+        cache_path: cache_path
+            .as_deref()
+            .map(to_string)
+            .unwrap_or_else(|| "(in-memory only)".to_string()),
+        default_cache_path: to_string(&default_path),
+        settings_path: state
+            .settings_path
+            .as_deref()
+            .map(to_string)
+            .unwrap_or_else(|| "(not written)".to_string()),
+        env_override: std::env::var_os("DEDUPE2_CACHE").is_some(),
+        cached_files,
+        cache_disk_bytes,
+        cache_dirty,
+        message,
+    };
+    tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
+}
+
+async fn settings_form(State(state): State<AppState>) -> Html<String> {
+    Html(render_settings(&state, None))
+}
+
+/// Point the cache at a new file: current knowledge is written there and
+/// future saves follow; the settings file remembers the choice.
+async fn settings_save(
+    State(state): State<AppState>,
+    Form(form): Form<CachePathForm>,
+) -> Html<String> {
+    let raw = form.cache_path.trim().to_string();
+    let new_path = if raw.is_empty() {
+        crate::Scanner::cache::default_cache_path()
+    } else {
+        PathBuf::from(&raw)
+    };
+
+    let message = match state.switch_cache_path(new_path.clone()) {
+        Ok(()) => {
+            let mut saved_settings = settings::Settings::load();
+            saved_settings.cache_path = Some(new_path.clone());
+            let settings_note = match &state.settings_path {
+                Some(path) => match saved_settings.save_to(path) {
+                    Ok(()) => String::new(),
+                    Err(e) => format!(" (warning: settings file not written: {e})"),
+                },
+                None => String::new(),
+            };
+            Some(format!(
+                "Cache moved to {}{settings_note}",
+                new_path.display()
+            ))
+        }
+        Err(e) => Some(format!("Could not move the cache: {e}")),
+    };
+    Html(render_settings(&state, message))
+}
+
+async fn settings_flush(State(state): State<AppState>) -> Html<String> {
+    let message = match state.cache_path() {
+        Some(path) => {
+            let mut cache = crate::Scanner::cache::lock(&state.cache);
+            match cache.save(&path) {
+                Ok(()) => Some(format!("Cache written to {}", path.display())),
+                Err(e) => Some(format!("Could not write the cache: {e}")),
+            }
+        }
+        None => Some("No cache location configured — nothing to write.".to_string()),
+    };
+    Html(render_settings(&state, message))
+}
+
+async fn settings_clear(State(state): State<AppState>) -> Html<String> {
+    let removed = state.cache_path().map(|path| {
+        let mut cache = crate::Scanner::cache::lock(&state.cache);
+        *cache = crate::Scanner::cache::ScanCache::new();
+        std::fs::remove_file(&path).is_ok()
+    });
+    let message = match (state.cache_path(), removed) {
+        (Some(_), Some(true)) => "Cache cleared and its file deleted.".to_string(),
+        (Some(path), Some(false)) => {
+            format!("Cache cleared in memory (no file at {}).", path.display())
+        }
+        _ => "Cache cleared.".to_string(),
+    };
+    Html(render_settings(&state, Some(message)))
+}
+
+async fn similar_form() -> SimilarFormTemplate {
+    SimilarFormTemplate {
+        title: "DeDupe2",
+        page: "similar",
+    }
+}
+
+async fn similar_run(
+    State(state): State<AppState>,
+    Form(form): Form<SimilarForm>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
+    let root_str = form.root.trim().to_string();
+    if root_str.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "provide a tree to scan".into()));
+    }
+    let root = PathBuf::from(&root_str);
+
+    let compare_root = form
+        .compare
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+    require_dir(Path::new(&root_str))?;
+    if let Some(other) = compare_root.as_deref() {
+        require_dir(Path::new(other))?;
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+    let progress_tx = tx.clone();
+    let done_tx = tx.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let progress = move |done: usize, total: usize| {
+            let _ = progress_tx.send(Msg::Progress(done, total));
+        };
+        let before = crate::Scanner::cache::lock(&state.cache).stats();
+
+        let html = match compare_root {
+            Some(other) => {
+                let other_root = PathBuf::from(&other);
+                let outcome = match find_similar_between_with_progress(
+                    &root,
+                    &other_root,
+                    &state.cache,
+                    &progress,
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(e) => {
+                        let _ = done_tx.send(Msg::Error(e.to_string()));
+                        return;
+                    }
+                };
+                let after = crate::Scanner::cache::lock(&state.cache).stats();
+                render_similar_compare(
+                    &outcome,
+                    &root_str,
+                    &other,
+                    after.reused.saturating_sub(before.reused),
+                    after.computed.saturating_sub(before.computed),
+                )
+            }
+            None => {
+                let outcome = match find_similar_with_progress(&root, &state.cache, &progress) {
+                    Ok(outcome) => outcome,
+                    Err(e) => {
+                        let _ = done_tx.send(Msg::Error(e.to_string()));
+                        return;
+                    }
+                };
+                let after = crate::Scanner::cache::lock(&state.cache).stats();
+                render_similar(
+                    &outcome,
+                    &root_str,
+                    after.reused.saturating_sub(before.reused),
+                    after.computed.saturating_sub(before.computed),
+                )
+            }
+        };
+        let _ = done_tx.send(Msg::Done(html));
+    });
+
+    Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
+}
+
+fn render_similar_compare(
+    outcome: &SimilarCompareOutcome,
+    a_root: &str,
+    b_root: &str,
+    cache_reused: usize,
+    cache_computed: usize,
+) -> String {
+    let rows: Vec<SimilarMatchRowView> = outcome
+        .matches
+        .iter()
+        .map(|m| SimilarMatchRowView {
+            a: to_string(&m.a),
+            b: to_string(&m.b),
+            distance: m.distance,
+            verdict: if m.removable {
+                "B is the smaller file — removable"
+            } else {
+                "B is the bigger file — keep"
+            },
+            removable: m.removable,
+            a_pixels: m.a_pixels,
+            b_pixels: m.b_pixels,
+            a_bytes: m.a_bytes,
+            b_bytes: m.b_bytes,
+        })
+        .collect();
+    let (rows, rows_more) = truncate_rows(rows);
+
+    let tpl = SimilarCompareTemplate {
+        a_root: a_root.to_string(),
+        b_root: b_root.to_string(),
+        cache_reused,
+        cache_computed,
+        scanned_a: outcome.scanned_a,
+        scanned_b: outcome.scanned_b,
+        lossy_a: outcome.lossy_a,
+        lossy_b: outcome.lossy_b,
+        match_count: outcome.matches.len(),
+        removable_count: outcome.removable_b.len(),
+        rows,
+        rows_more,
+        candidates_input: outcome
+            .removable_b
+            .iter()
+            .map(|p| to_string(p))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+    tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
+}
+
+fn render_similar(
+    outcome: &SimilarOutcome,
+    root: &str,
+    cache_reused: usize,
+    cache_computed: usize,
+) -> String {
+    let mut rows: Vec<SimilarRowView> = Vec::new();
+    for group in &outcome.groups {
+        for candidate in &group.candidates {
+            rows.push(SimilarRowView {
+                keeper: to_string(&group.keeper),
+                candidate: to_string(&candidate.path),
+                distance: candidate.distance,
+                keeper_pixels: group.keeper_pixels,
+                candidate_pixels: candidate.pixels,
+                keeper_bytes: group.keeper_bytes,
+                candidate_bytes: candidate.bytes,
+            });
+        }
+    }
+    let (rows, rows_more) = truncate_rows(rows);
+
+    let tpl = SimilarResultTemplate {
+        root: root.to_string(),
+        cache_reused,
+        cache_computed,
+        scanned: outcome.scanned,
+        lossy: outcome.lossy,
+        group_count: outcome.groups.len(),
+        candidate_count: outcome.candidates,
+        removable_count: outcome.removable.len(),
+        rows,
+        rows_more,
+        candidates_input: outcome
+            .removable
+            .iter()
+            .map(|p| to_string(p))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+    tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
 }
 
 async fn organize_form() -> OrganizeFormTemplate {
@@ -1279,6 +1682,7 @@ async fn verify_rehome(
     if root.as_os_str().is_empty() {
         return Err((StatusCode::BAD_REQUEST, "missing destination tree root".into()));
     }
+    require_dir(&root)?;
     let format = form
         .format
         .map(|f| f.trim().to_string())
@@ -1356,6 +1760,10 @@ async fn sets_run(
         return Err((StatusCode::BAD_REQUEST, "provide at least one candidate tree".into()));
     }
     let a = PathBuf::from(&a_str);
+    require_dir(&a)?;
+    for candidate in &candidates {
+        require_dir(candidate)?;
+    }
 
     let (tx, rx) = mpsc::unbounded_channel::<Msg>();
     let progress_tx = tx.clone();
@@ -1577,6 +1985,91 @@ fn render_consolidate_done(outcome: &ConsolidationOutcome, purgatory: &Path) -> 
 #[derive(Clone, Default)]
 pub struct AppState {
     pub cache: std::sync::Arc<std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
+    /// Where the cache is persisted; `None` keeps everything in memory
+    /// (tests and throwaway runs). Changeable from the Settings tab.
+    pub cache_path: std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
+    /// Where the settings file lives; `None` skips writing it (tests).
+    pub settings_path: Option<PathBuf>,
+    /// Guards against overlapping autosaves (a save can take a while on a
+    /// large cache; stacking them would starve the scans behind the lock).
+    persisting: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AppState {
+    /// In-memory state for tests.
+    pub fn in_memory() -> AppState {
+        AppState::default()
+    }
+
+    /// Production state: settings (then environment, then platform default)
+    /// pick the cache location, which is loaded before serving.
+    pub fn persistent() -> AppState {
+        let settings = settings::Settings::load();
+        let path = resolve_cache_path(&settings);
+        let cache = crate::Scanner::cache::ScanCache::load(&path);
+        AppState {
+            cache: std::sync::Arc::new(std::sync::Mutex::new(cache)),
+            cache_path: std::sync::Arc::new(std::sync::Mutex::new(Some(path))),
+            settings_path: Some(settings::Settings::settings_path()),
+            ..AppState::default()
+        }
+    }
+
+    pub fn cache_path(&self) -> Option<PathBuf> {
+        self.cache_path
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Save when there is something new to save. Cheap no-op otherwise, and
+    /// never runs two saves at once.
+    pub fn persist(&self) {
+        use std::sync::atomic::Ordering;
+
+        let Some(path) = self.cache_path() else {
+            return;
+        };
+        if self.persisting.swap(true, Ordering::SeqCst) {
+            return; // a save is already in flight
+        }
+        let result = {
+            let mut cache = crate::Scanner::cache::lock(&self.cache);
+            if cache.dirty() {
+                cache.save(&path)
+            } else {
+                Ok(())
+            }
+        };
+        self.persisting.store(false, Ordering::SeqCst);
+        if let Err(e) = result {
+            tracing::warn!("failed to persist scan cache to {}: {e}", path.display());
+        }
+    }
+
+    /// Move the cache to a new location: the current (live) cache is written
+    /// there and all future saves go to the new path.
+    pub fn switch_cache_path(&self, new_path: PathBuf) -> std::io::Result<()> {
+        let mut cache = crate::Scanner::cache::lock(&self.cache);
+        cache.save(&new_path)?;
+        *self
+            .cache_path
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(new_path);
+        Ok(())
+    }
+}
+
+/// Resolution order: `$DEDUPE2_CACHE` (for scripts/tests) beats the settings
+/// file, which beats the platform default.
+fn resolve_cache_path(settings: &settings::Settings) -> PathBuf {
+    if let Some(p) = std::env::var_os("DEDUPE2_CACHE") {
+        return PathBuf::from(p);
+    }
+    settings
+        .cache_path
+        .clone()
+        .unwrap_or_else(crate::Scanner::cache::default_cache_path)
 }
 
 pub fn app() -> Router {
@@ -1600,6 +2093,12 @@ pub fn app_with_state(state: AppState) -> Router {
         .route("/verify", get(verify_form))
         .route("/verify/run", post(verify_run))
         .route("/verify/rehome", post(verify_rehome))
+        .route("/settings", get(settings_form))
+        .route("/settings/save", post(settings_save))
+        .route("/settings/flush", post(settings_flush))
+        .route("/settings/clear", post(settings_clear))
+        .route("/similar", get(similar_form))
+        .route("/similar/run", post(similar_run))
         .route("/organize", get(organize_form))
         .route("/organize/scan", post(organize_scan))
         .route("/organize/run", post(organize_run))

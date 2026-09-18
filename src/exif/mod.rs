@@ -10,7 +10,7 @@ use std::time::SystemTime;
 
 use nom_exif::{read_metadata, ExifTag, Metadata, TrackInfoTag};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CreationDate {
     DateCreated(String),
     Unknown,

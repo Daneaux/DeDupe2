@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="panel" role="tabpanel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Settings</h2>
+      <span class="subtitle">Where the scan cache lives. Everything the app learns about your files — hashes, perceptual hashes, pixel keys, dates — survives restarts in this file.</span>
+    </div>
+  </div>
+
+  {% if let Some(message) = message %}
+  <p class="placeholder">{{ message }}</p>
+  {% endif %}
+
+  <div class="merge-summary">
+    <div class="summary-stat">
+      <span class="summary-value">{{ cached_files }}</span>
+      <span class="summary-label">files cached</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{% if let Some(bytes) = cache_disk_bytes %}{{ bytes }}{% else %}—{% endif %}</span>
+      <span class="summary-label">bytes on disk</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{% if cache_dirty %}yes{% else %}no{% endif %}</span>
+      <span class="summary-label">unsaved changes</span>
+    </div>
+  </div>
+
+  <form method="post" action="/settings/save">
+    <label class="field">
+      <span>Cache file path</span>
+      <input type="text" name="cache_path" value="{{ cache_path }}" placeholder="{{ default_cache_path }}" />
+      <span class="hint">
+        Current: <code>{{ cache_path }}</code><br />
+        Platform default: <code>{{ default_cache_path }}</code><br />
+        Settings file: <code>{{ settings_path }}</code>
+        {% if env_override %}<br /><strong>Note:</strong> $DEDUPE2_CACHE is set and takes precedence over this setting.{% endif %}
+      </span>
+    </label>
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary">Save cache location</button>
+    </div>
+    <p class="hint">Saving moves the current cache (all learned hashes/dates) to the new file and writes future scans there. An existing file at the new path is replaced.</p>
+  </form>
+
+  <form method="post" action="/settings/flush">
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-small btn-secondary">Write cache now</button>
+    </div>
+  </form>
+
+  <form method="post" action="/settings/clear" onsubmit="return confirm('Clear the scan cache and delete its file? All learned hashes and dates will be recomputed on the next scan.');">
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-small btn-secondary">Clear cache</button>
+    </div>
+    <p class="hint">Deletes the cached knowledge (not your photos). The next scans recompute from scratch.</p>
+  </form>
+</section>
+{% endblock %}

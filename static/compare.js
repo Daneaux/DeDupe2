@@ -3,13 +3,28 @@
     document.getElementById("compare-" + suffix) ||
     document.getElementById("sets-" + suffix) ||
     document.getElementById("verify-" + suffix) ||
-    document.getElementById("organize-" + suffix);
+    document.getElementById("organize-" + suffix) ||
+    document.getElementById("similar-" + suffix);
   const progress = pick("progress");
   const fill = pick("progress-fill");
   const text = pick("progress-text");
   const result = pick("result");
 
   let phaseLabel = "Working";
+
+  // Compact "…/parent/leaf" form of a path for progress labels.
+  function shortPath(value) {
+    if (!value) return "";
+    const clean = String(value).trim().replace(/\/+$/, "");
+    const parts = clean.split("/").filter(Boolean);
+    if (parts.length === 0) return "";
+    return "…/" + parts.slice(-2).join("/");
+  }
+
+  function fieldValue(form, name) {
+    const el = form.querySelector('[name="' + name + '"]');
+    return el ? el.value : "";
+  }
 
   function handleEvent(raw) {
     let event = "message";
@@ -54,34 +69,47 @@
     let url = null;
     if (form.id === "compare-form") {
       url = "/compare/run";
-      phaseLabel = "Scanning";
+      phaseLabel = "Scanning " + shortPath(fieldValue(form, "a")) +
+        " vs " + shortPath(fieldValue(form, "b"));
     } else if (form.id === "compare-exif-form") {
       url = "/compare/exif";
       phaseLabel = "Reading EXIF";
     } else if (form.id === "compare-copy-form") {
       url = "/compare/copy";
-      phaseLabel = "Copying";
+      phaseLabel = "Copying into " + shortPath(fieldValue(form, "destination"));
     } else if (form.id === "sets-form") {
       url = "/sets/run";
-      phaseLabel = "Scanning";
+      const candidates = fieldValue(form, "candidates")
+        .split("\n")
+        .filter((line) => line.trim() !== "").length;
+      phaseLabel = "Scanning " + shortPath(fieldValue(form, "a")) +
+        " vs " + candidates + " candidate tree(s)";
     } else if (form.id === "compare-deep-form") {
       url = "/compare/deep";
-      phaseLabel = "Deep scan";
+      const pairs = fieldValue(form, "pairs")
+        .split("\n")
+        .filter((line) => line.trim() !== "").length;
+      phaseLabel = "Deep scan (" + pairs + " pair(s))";
     } else if (form.id === "purgatory-form") {
       url = "/compare/purgatory";
-      phaseLabel = "Moving";
+      phaseLabel = "Moving from " + shortPath(fieldValue(form, "b_root"));
     } else if (form.id === "organize-form") {
       url = "/organize/scan";
-      phaseLabel = "Scanning";
+      phaseLabel = "Scanning " + shortPath(fieldValue(form, "source"));
     } else if (form.id === "organize-move-form") {
       url = "/organize/run";
-      phaseLabel = "Organizing";
+      phaseLabel = "Organizing into " + shortPath(fieldValue(form, "destination"));
+    } else if (form.id === "similar-form") {
+      url = "/similar/run";
+      const against = fieldValue(form, "compare");
+      phaseLabel = "Finding similar in " + shortPath(fieldValue(form, "root")) +
+        (against.trim() ? " vs " + shortPath(against) : "");
     } else if (form.id === "verify-form") {
       url = "/verify/run";
-      phaseLabel = "Verifying";
+      phaseLabel = "Verifying " + shortPath(fieldValue(form, "root"));
     } else if (form.id === "verify-rehome-form") {
       url = "/verify/rehome";
-      phaseLabel = "Re-homing";
+      phaseLabel = "Re-homing " + shortPath(fieldValue(form, "root"));
     }
     if (!url) return;
     e.preventDefault();
@@ -106,6 +134,11 @@
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let terminal = false;
+      const onEvent = function (raw) {
+        if (/^event:\s*(done|error)\s*$/m.test(raw)) terminal = true;
+        handleEvent(raw);
+      };
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -114,8 +147,16 @@
         while ((idx = buffer.indexOf("\n\n")) !== -1) {
           const raw = buffer.slice(0, idx);
           buffer = buffer.slice(idx + 2);
-          handleEvent(raw);
+          onEvent(raw);
         }
+      }
+      // A stream that ends without done/error means the worker died (panic)
+      // or the connection dropped — never leave the UI on "Working…".
+      if (!terminal) {
+        text.textContent =
+          "Error: the scan stopped before finishing — check the server console for a panic.";
+        text.classList.add("error");
+        fill.style.width = "100%";
       }
     });
   });
@@ -333,6 +374,7 @@ document.addEventListener("change", function (e) {
             "cached: " + n(j.cached_files) + " file(s) · " +
             layer("shallow", j.shallow) + " · " +
             layer("deep", j.deep) + " · " +
+            layer("phash", j.phash) + " · " +
             layer("exif", j.exif);
         } else {
           span.innerHTML = 'not cached <span class="cache-off">0</span>';

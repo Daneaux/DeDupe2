@@ -5,6 +5,7 @@ mod isobmff;
 mod jpg;
 mod raster;
 mod png;
+mod phash;
 mod movie;
 mod raw;
 mod types;
@@ -14,6 +15,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 pub use bytes::read_bytes;
+pub use phash::{distance, distance_of, lossy_kind, phash, phash_of, Phash, SIMILAR_MAX_DISTANCE};
 pub use hash::{
     hash_all_bytes, hash_first_n_bytes, hash_image_data, hash_image_data_all,
     hash_image_data_n, hash_image_data_status,
@@ -176,7 +178,17 @@ fn detect_file_type(path: &Path) -> Result<FileType, ImageReaderError> {
 pub fn collect_image_files(dir: &Path) -> Result<Vec<PathBuf>, ImageReaderError> {
     let mut out = Vec::new();
     for entry in WalkDir::new(dir) {
-        let entry = entry.map_err(|e| ImageReaderError::new(e.to_string()))?;
+        // A tree can change while a long scan runs (a folder renamed or a
+        // file deleted mid-walk). Skipping the unreadable entry keeps the
+        // rest of the scan useful instead of aborting after minutes of work;
+        // genuinely bad roots are rejected up front by the handlers.
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::debug!("skipping unreadable path during scan: {e}");
+                continue;
+            }
+        };
         if entry.file_type().is_file() && is_supported_image(entry.path()) {
             out.push(entry.into_path());
         }

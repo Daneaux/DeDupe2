@@ -17,11 +17,11 @@ use rayon::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::exif::CreationDate;
-use crate::image_reader::{self, ImageData, ImageReaderError, PixelData};
+use crate::image_reader::{self, ImageData, ImageReaderError, Phash, PixelData};
 
 /// What the cache did on behalf of the caller — surfaced in the UI so a
 /// reused tree is visible at a glance.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct CacheStats {
     /// Files currently held in the tree (tracked, never counted by walking).
     pub files: usize,
@@ -33,7 +33,7 @@ pub struct CacheStats {
 
 /// Decoded pixels reduced to a comparable key (dims + content hash), so deep
 /// scans can compare two files without decoding them twice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PixelKey {
     pub width: usize,
     pub height: usize,
@@ -41,10 +41,13 @@ pub struct PixelKey {
     pub hash: u64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct FileEntry {
     size: u64,
     mtime: Option<SystemTime>,
+    /// Device id of the volume the file lives on (unix `st_dev`), 0 when
+    /// unavailable. Persisted so same-volume decisions survive restarts.
+    dev: u64,
     /// 64kb encoded-image-data hash + decoded flag.
     shallow: Option<(u64, bool)>,
     /// Whole-file byte hash.
@@ -53,6 +56,9 @@ struct FileEntry {
     full_content: Option<u64>,
     /// Decoded pixel key (deep scan step 3).
     pixel: Option<PixelKey>,
+    /// Perceptual hash + source dimensions (near-duplicate detection for
+    /// lossy same-kind files).
+    phash: Option<Phash>,
     /// Cached creation date (may be a cached `Unknown`).
     date: Option<CreationDate>,
 }
@@ -63,7 +69,7 @@ impl FileEntry {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct DirNode {
     children: HashMap<OsString, DirNode>,
     files: HashMap<OsString, FileEntry>,
@@ -83,6 +89,9 @@ impl DirNode {
             if entry.full_bytes.is_some() || entry.full_content.is_some() {
                 coverage.deep += 1;
             }
+            if entry.phash.is_some() {
+                coverage.phash += 1;
+            }
             if entry.date.is_some() {
                 coverage.exif += 1;
             }
@@ -99,13 +108,17 @@ pub struct BranchCoverage {
     pub files: usize,
     pub shallow: usize,
     pub deep: usize,
+    pub phash: usize,
     pub exif: usize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ScanCache {
     root: DirNode,
     stats: CacheStats,
+    /// Something changed since the last save. Session state, not persisted.
+    #[serde(skip)]
+    dirty: bool,
 }
 
 impl ScanCache {
@@ -130,6 +143,7 @@ impl ScanCache {
         let dropped = node.file_count();
         self.stats.files = self.stats.files.saturating_sub(dropped);
         *node = DirNode::default();
+        self.dirty = true;
     }
 
     /// How many cached file entries live under `path` — the subtree count for
@@ -152,14 +166,13 @@ impl ScanCache {
             }
             // The final component may be a file tracked in this node.
             if node.files.contains_key(comp.as_os_str()) {
+                let entry = &node.files[comp.as_os_str()];
                 return BranchCoverage {
                     files: 1,
-                    shallow: usize::from(node.files[comp.as_os_str()].shallow.is_some()),
-                    deep: usize::from(
-                        node.files[comp.as_os_str()].full_bytes.is_some()
-                            || node.files[comp.as_os_str()].full_content.is_some(),
-                    ),
-                    exif: usize::from(node.files[comp.as_os_str()].date.is_some()),
+                    shallow: usize::from(entry.shallow.is_some()),
+                    deep: usize::from(entry.full_bytes.is_some() || entry.full_content.is_some()),
+                    phash: usize::from(entry.phash.is_some()),
+                    exif: usize::from(entry.date.is_some()),
                 };
             }
             return BranchCoverage::default();
@@ -182,6 +195,7 @@ impl ScanCache {
         if let Some(node) = Self::node_mut_existing(&mut self.root, parent) {
             if node.files.remove(&name).is_some() {
                 self.stats.files = self.stats.files.saturating_sub(1);
+                self.dirty = true;
             }
         }
     }
@@ -223,6 +237,7 @@ impl ScanCache {
         };
         let size = meta.len();
         let mtime = meta.modified().ok();
+        let dev = device_of(&meta);
         let name = path.file_name()?.to_os_string();
         let parent = path.parent()?;
 
@@ -235,6 +250,7 @@ impl ScanCache {
                     slot.insert(FileEntry {
                         size,
                         mtime,
+                        dev,
                         ..Default::default()
                     });
                     self.stats.files += 1;
@@ -245,8 +261,10 @@ impl ScanCache {
                         *slot.get_mut() = FileEntry {
                             size,
                             mtime,
+                            dev,
                             ..Default::default()
                         };
+                        self.dirty = true;
                     }
                     slot.into_mut()
                 }
@@ -338,6 +356,24 @@ impl ScanCache {
         self.store_layer(path, value, |entry| &mut entry.pixel, |entry, v| entry.pixel = Some(v));
     }
 
+    /// Perceptual hash, cached on success.
+    pub fn phash(&mut self, path: &Path) -> Option<Phash> {
+        if let Some(v) = self.phash_lookup(path) {
+            return Some(v);
+        }
+        let v = image_reader::phash(path)?;
+        self.phash_store(path, v);
+        Some(v)
+    }
+
+    pub fn phash_lookup(&mut self, path: &Path) -> Option<Phash> {
+        self.with_entry(path, |e| e.phash, |_e, _v| {}, || None)
+    }
+
+    pub fn phash_store(&mut self, path: &Path, value: Phash) {
+        self.store_layer(path, value, |entry| &mut entry.phash, |entry, v| entry.phash = Some(v));
+    }
+
     /// Cached creation date (a cached `Unknown` is a real answer, so date
     /// presence itself is the cache hit).
     pub fn creation_date(&mut self, path: &Path) -> Option<CreationDate> {
@@ -364,6 +400,7 @@ impl ScanCache {
         let Some(node) = Self::node_mut(&mut self.root, parent) else {
             return;
         };
+        self.dirty = true;
         let entry = match node.files.entry(name) {
             std::collections::hash_map::Entry::Vacant(slot) => {
                 self.stats.files += 1;
@@ -391,13 +428,242 @@ impl ScanCache {
                     self.stats.computed += 1;
                 }
                 entry.date = Some(date);
+                self.dirty = true;
             }
         }
     }
 }
 
+#[cfg(unix)]
+fn device_of(meta: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    meta.dev()
+}
+
+#[cfg(not(unix))]
+fn device_of(_meta: &std::fs::Metadata) -> u64 {
+    0
+}
+
 fn file_key(path: &Path) -> Option<(OsString, &Path)> {
     Some((path.file_name()?.to_os_string(), path.parent()?))
+}
+
+/// On-disk snapshot version. Bump when the entry shape changes; older files
+/// are migrated when the difference is lossless, ignored otherwise.
+const CACHE_FORMAT_VERSION: u32 = 2;
+
+// ---- version 1 compatibility -------------------------------------------
+// v1 stored a `sharpness` estimate inside Phash (a heuristic that was
+// removed). Everything else is identical, so a v1 snapshot converts by
+// dropping that one field — no cache knowledge is lost.
+// Remove after the next format bump.
+mod v1 {
+    use super::*;
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::time::SystemTime;
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    pub struct PersistedCache {
+        pub version: u32,
+        pub root: DirNode,
+        pub stats: CacheStats,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    pub struct DirNode {
+        pub children: HashMap<OsString, DirNode>,
+        pub files: HashMap<OsString, FileEntry>,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    pub struct FileEntry {
+        pub size: u64,
+        pub mtime: Option<SystemTime>,
+        pub dev: u64,
+        pub shallow: Option<(u64, bool)>,
+        pub full_bytes: Option<u64>,
+        pub full_content: Option<u64>,
+        pub pixel: Option<PixelKey>,
+        pub phash: Option<PhashV1>,
+        pub date: Option<CreationDate>,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    pub struct PhashV1 {
+        pub hash: u64,
+        pub width: u32,
+        pub height: u32,
+        #[allow(dead_code)]
+        pub sharpness: f32,
+    }
+
+    pub fn convert_node(node: DirNode) -> DirNodeSuper {
+        DirNodeSuper {
+            children: node
+                .children
+                .into_iter()
+                .map(|(name, child)| (name, convert_node(child)))
+                .collect(),
+            files: node
+                .files
+                .into_iter()
+                .map(|(name, entry)| (name, convert_entry(entry)))
+                .collect(),
+        }
+    }
+
+    fn convert_entry(entry: FileEntry) -> FileEntrySuper {
+        FileEntrySuper {
+            size: entry.size,
+            mtime: entry.mtime,
+            dev: entry.dev,
+            shallow: entry.shallow,
+            full_bytes: entry.full_bytes,
+            full_content: entry.full_content,
+            pixel: entry.pixel,
+            phash: entry.phash.map(|p| Phash {
+                hash: p.hash,
+                width: p.width,
+                height: p.height,
+            }),
+            date: entry.date,
+        }
+    }
+
+    type DirNodeSuper = super::DirNode;
+    type FileEntrySuper = super::FileEntry;
+}
+
+/// The persisted form is the cache structure itself, serialized with serde
+/// through a binary codec — no hand-translated shape, so non-UTF8 path
+/// components and every learned layer (shallow hash, full hashes, pixel key,
+/// phash, dates, device id) round-trip losslessly.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedCache {
+    version: u32,
+    root: DirNode,
+    stats: CacheStats,
+}
+
+/// Where the cache persists by default: `$DEDUPE2_CACHE`, else the platform
+/// cache directory (`~/Library/Caches/dedupe2/…` on macOS, `~/.cache/…`
+/// elsewhere), else the temp directory.
+pub fn default_cache_path() -> PathBuf {
+    if let Some(p) = std::env::var_os("DEDUPE2_CACHE") {
+        return PathBuf::from(p);
+    }
+    let Some(home) = std::env::var_os("HOME") else {
+        return std::env::temp_dir().join("dedupe2-scan-cache.bin");
+    };
+    let base = PathBuf::from(home);
+    if cfg!(target_os = "macos") {
+        base.join("Library/Caches/dedupe2/scan-cache.bin")
+    } else {
+        base.join(".cache/dedupe2/scan-cache.bin")
+    }
+}
+
+impl ScanCache {
+    /// True when something changed since the last `save`.
+    pub fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Load a previously saved snapshot. Missing, unreadable, corrupt or
+    /// version-mismatched files yield an empty cache — never an error.
+    /// Validation stays lazy: loaded entries are checked against the
+    /// filesystem the first time they are used.
+    pub fn load(path: &Path) -> ScanCache {
+        let data = match std::fs::read(path) {
+            Ok(data) => data,
+            Err(_) => return ScanCache::new(),
+        };
+        // Peek at the version first: bincode isn't self-describing, so each
+        // version needs its own parse.
+        let version: u32 = match bincode::deserialize::<(u32,)>(&data) {
+            Ok((version,)) => version,
+            Err(e) => {
+                tracing::warn!("ignoring unreadable scan cache {}: {e}", path.display());
+                return ScanCache::new();
+            }
+        };
+
+        match version {
+            CACHE_FORMAT_VERSION => {
+                let snapshot: PersistedCache = match bincode::deserialize(&data) {
+                    Ok(snapshot) => snapshot,
+                    Err(e) => {
+                        tracing::warn!("ignoring unreadable scan cache {}: {e}", path.display());
+                        return ScanCache::new();
+                    }
+                };
+                let cache = ScanCache {
+                    root: snapshot.root,
+                    stats: snapshot.stats,
+                    dirty: false,
+                };
+                tracing::info!("scan cache loaded: {} files", cache.stats.files);
+                cache
+            }
+            1 => {
+                let snapshot: v1::PersistedCache = match bincode::deserialize(&data) {
+                    Ok(snapshot) => snapshot,
+                    Err(e) => {
+                        tracing::warn!("ignoring unreadable scan cache {}: {e}", path.display());
+                        return ScanCache::new();
+                    }
+                };
+                let cache = ScanCache {
+                    root: v1::convert_node(snapshot.root),
+                    stats: snapshot.stats,
+                    // Rewrite in the current format on the next autosave.
+                    dirty: true,
+                };
+                tracing::info!(
+                    "scan cache loaded from version 1 and migrated: {} files",
+                    cache.stats.files
+                );
+                cache
+            }
+            other => {
+                tracing::info!(
+                    "scan cache {} has version {other} (expected {CACHE_FORMAT_VERSION}) — starting fresh",
+                    path.display()
+                );
+                ScanCache::new()
+            }
+        }
+    }
+
+
+
+    /// Write the full snapshot (atomically: temp file + rename). Clears the
+    /// dirty flag on success.
+    pub fn save(&mut self, path: &Path) -> std::io::Result<()> {
+        // Serialize by value without cloning the tree: take it, wrap it,
+        // and always put it back.
+        let snapshot = PersistedCache {
+            version: CACHE_FORMAT_VERSION,
+            root: std::mem::take(&mut self.root),
+            stats: self.stats,
+        };
+        let data = bincode::serialize(&snapshot)
+            .map_err(std::io::Error::other)
+            .and_then(|data| {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let tmp = path.with_extension("bin.tmp");
+                std::fs::write(&tmp, &data)?;
+                std::fs::rename(&tmp, path)
+            });
+        self.root = snapshot.root;
+        data?;
+        self.dirty = false;
+        Ok(())
+    }
 }
 
 /// Lock helper that survives a poisoned mutex (a panic while hashing one
@@ -487,6 +753,16 @@ pub fn full_content_cached(cache: &Mutex<ScanCache>, path: &Path) -> Result<u64,
     Ok(value)
 }
 
+/// Perceptual hash through the cache, computed outside the lock.
+pub fn cached_phash(cache: &Mutex<ScanCache>, path: &Path) -> Option<Phash> {
+    if let Some(value) = lock(cache).phash_lookup(path) {
+        return Some(value);
+    }
+    let value = image_reader::phash(path)?;
+    lock(cache).phash_store(path, value);
+    Some(value)
+}
+
 /// Decoded pixel key through the cache, computed outside the lock.
 pub fn pixel_cached(cache: &Mutex<ScanCache>, path: &Path) -> Option<PixelKey> {
     if let Some(value) = lock(cache).pixel_lookup(path) {
@@ -540,4 +816,104 @@ pub fn creation_dates_cached(
     out.into_iter()
         .map(|date| date.unwrap_or(CreationDate::Unknown))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn insert_v1(root: &mut v1::DirNode, path: &Path, entry: v1::FileEntry) {
+        let mut node = root;
+        for comp in path.parent().unwrap().components() {
+            node = node
+                .children
+                .entry(comp.as_os_str().to_os_string())
+                .or_insert_with(|| v1::DirNode {
+                    children: HashMap::new(),
+                    files: HashMap::new(),
+                });
+        }
+        node.files
+            .insert(path.file_name().unwrap().to_os_string(), entry);
+    }
+
+    /// A real version-1 snapshot (with the sharpness field) must migrate:
+    /// loaded entries still validate against the file and serve every layer
+    /// from the cache, with no recomputation.
+    #[test]
+    fn version_1_snapshots_migrate_without_losing_knowledge() {
+        let dir = std::env::temp_dir().join(format!("dedupe2-v1-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = dir.join("cache.bin");
+        let file = dir.join("photo.jpg");
+        std::fs::write(&file, vec![7u8; 2048]).unwrap();
+
+        let meta = std::fs::metadata(&file).unwrap();
+        let entry = v1::FileEntry {
+            size: meta.len(),
+            mtime: meta.modified().ok(),
+            dev: 7,
+            shallow: Some((0xABCD, true)),
+            full_bytes: Some(11),
+            full_content: Some(22),
+            pixel: Some(PixelKey {
+                width: 10,
+                height: 20,
+                cpp: 3,
+                hash: 33,
+            }),
+            phash: Some(v1::PhashV1 {
+                hash: 44,
+                width: 10,
+                height: 20,
+                sharpness: 0.75,
+            }),
+            date: Some(CreationDate::DateCreated("2020-01-02".into())),
+        };
+        let mut root = v1::DirNode {
+            children: HashMap::new(),
+            files: HashMap::new(),
+        };
+        insert_v1(&mut root, &file, entry);
+        let snapshot = v1::PersistedCache {
+            version: 1,
+            root,
+            stats: CacheStats {
+                files: 1,
+                reused: 5,
+                computed: 6,
+            },
+        };
+        std::fs::write(&store, bincode::serialize(&snapshot).unwrap()).unwrap();
+
+        let mut cache = ScanCache::load(&store);
+        assert_eq!(cache.stats().files, 1, "entry survived the migration");
+        assert!(cache.dirty(), "migration schedules a rewrite in v2");
+
+        let before = cache.stats();
+        assert_eq!(cache.shallow_hash(&file, 64 * 1024), (0xABCD, true));
+        assert_eq!(cache.full_content_hash(&file).unwrap(), 22);
+        assert_eq!(
+            cache.phash(&file).unwrap(),
+            Phash {
+                hash: 44,
+                width: 10,
+                height: 20
+            },
+            "sharpness dropped, everything else intact"
+        );
+        assert_eq!(
+            cache.creation_date(&file),
+            Some(CreationDate::DateCreated("2020-01-02".into()))
+        );
+        assert_eq!(
+            cache.stats().computed,
+            before.computed,
+            "nothing recomputed after migration"
+        );
+
+        let _ = std::fs::remove_file(&store);
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir(&dir);
+    }
 }
