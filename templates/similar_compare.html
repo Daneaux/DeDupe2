@@ -23,35 +23,59 @@
       <span class="summary-value">{{ removable_count }}</span>
       <span class="summary-label">B copies safe to remove</span>
     </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ swap_count }}</span>
+      <span class="summary-label">B copies better than A (swappable)</span>
+    </div>
   </div>
+
+  {% if duplicate_count > 0 %}
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Exact duplicates</span>
+      <span class="badge badge-dirty">{{ duplicate_count }}</span>
+      <span class="collection-sub">identical content (64kb head + full content hash) — eliminated before similarity</span>
+    </div>
+    <div class="table-tools">
+      <input type="text" class="table-filter" id="similar-filter-dups" placeholder="filter this table…" />
+      <span class="hint" id="similar-count-dups"></span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>A (kept)</th><th>B (exact copy)</th></tr></thead>
+        <tbody id="similar-table-dups"></tbody>
+      </table>
+    </div>
+    <button type="button" class="btn btn-small btn-secondary table-more" id="similar-more-dups" hidden>more…</button>
+    <form method="post" action="/compare/purgatory" id="purgatory-form-dups" class="merge-form">
+      <input type="hidden" name="files" value="{{ duplicates_input }}" />
+      <input type="hidden" name="b_root" value="{{ b_root }}" />
+      <label class="field">
+        <span>Purgatory folder</span>
+        <input type="text" name="purgatory" placeholder="/path/to/purgatory" />
+        <span class="hint">Step 1 — moves the exact B copies out of the candidate tree, keeping its layout. The A copies stay.</span>
+      </label>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-small btn-secondary">Move {{ duplicate_count }} exact B copies to purgatory</button>
+      </div>
+    </form>
+  </article>
+  {% endif %}
 
   {% if match_count == 0 %}
   <p class="placeholder">No similar images between A and B.</p>
   {% else %}
+  <div class="table-tools">
+    <input type="text" class="table-filter" id="similar-filter-matches" placeholder="filter this table…" />
+    <span class="hint" id="similar-count-matches"></span>
+  </div>
   <div class="table-scroll">
     <table class="compare-table">
       <thead><tr><th>A (kept when bigger)</th><th>B</th><th>Verdict</th><th>Distance</th><th>A px</th><th>B px</th><th>A size</th><th>B size</th></tr></thead>
-      <tbody>
-        {% for r in rows %}
-        <tr>
-          <td class="path clickable" data-reveal="{{ r.a }}">{{ r.a }}</td>
-          <td class="path clickable" data-reveal="{{ r.b }}">{{ r.b }}</td>
-          <td>
-            {% if r.removable %}<span class="badge badge-dirty">{{ r.verdict }}</span>{% else %}<span class="badge badge-ok">{{ r.verdict }}</span>{% endif %}
-          </td>
-          <td>{{ r.distance }}</td>
-          <td>{{ r.a_pixels }}</td>
-          <td>{{ r.b_pixels }}</td>
-          <td>{{ r.a_bytes }}</td>
-          <td>{{ r.b_bytes }}</td>
-        </tr>
-        {% endfor %}
-        {% if rows_more > 0 %}
-        <tr class="more-row"><td colspan="8" class="muted">… {{ rows_more }} more not shown</td></tr>
-        {% endif %}
-      </tbody>
+      <tbody id="similar-table-matches"></tbody>
     </table>
   </div>
+  <button type="button" class="btn btn-small btn-secondary table-more" id="similar-more-matches" hidden>more…</button>
 
   <form method="post" action="/compare/purgatory" id="purgatory-form" class="merge-form">
     <input type="hidden" name="files" value="{{ candidates_input }}" />
@@ -59,15 +83,39 @@
     <label class="field">
       <span>Purgatory folder</span>
       <input type="text" name="purgatory" placeholder="/path/to/purgatory" />
-      <span class="hint">Moves the flagged B copies out of the tree, keeping their folder layout. The A copies stay untouched.</span>
+      <span class="hint">Step 1 — moves the flagged B copies out of the tree, keeping their folder layout. The A copies stay untouched.</span>
     </label>
     <div class="modal-actions">
       <button type="submit" class="btn btn-small btn-secondary" {% if removable_count == 0 %}disabled{% endif %}>Move {{ removable_count }} B copies to purgatory</button>
     </div>
   </form>
+
+  {% if swap_count > 0 %}
+  <form method="post" action="/similar/swap" id="similar-swap-form" class="merge-form">
+    <input type="hidden" name="swaps" value="{{ swaps_input }}" />
+    <input type="hidden" name="a_root" value="{{ a_root }}" />
+    <input type="hidden" name="b_root" value="{{ b_root }}" />
+    <label class="field">
+      <span>Purgatory folder (for A's worse copies)</span>
+      <input type="text" name="purgatory" placeholder="/path/to/purgatory" />
+      <span class="hint">
+        Step 2 — for matches where B holds the bigger file: A's worse copy is moved to purgatory first
+        (copy &rarr; byte-verify &rarr; remove), then B's better copy takes its place in A, also verified.
+        If either half fails, both copies stay where they are.
+      </span>
+    </label>
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-small btn-secondary">Swap {{ swap_count }} better B copies into A</button>
+    </div>
+  </form>
+  {% endif %}
   {% endif %}
 
   <div class="toolbar-actions">
     <a class="btn btn-secondary" href="/similar">Back to similar</a>
   </div>
 </section>
+
+<script id="similar-matches-data" type="application/json">{{ rows_json|safe }}</script>
+
+<script id="similar-dups-data" type="application/json">{{ duplicates_json|safe }}</script>

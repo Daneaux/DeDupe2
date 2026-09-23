@@ -45,8 +45,10 @@
     } else if (event === "done") {
       progress.hidden = true;
       result.innerHTML = body;
-      // Verify results render client-side from embedded JSON payloads.
+      // Result pages that embed JSON payloads render client-side.
       if (document.getElementById("verify-mismatches-data")) renderVerify();
+      if (document.getElementById("compare-a-data")) initCompareTables();
+      if (window.__initSimilarTables) window.__initSimilarTables();
       // The scan just fed the cache — update the path-field hints.
       if (window.refreshCacheHints) window.refreshCacheHints();
     } else if (event === "error") {
@@ -67,7 +69,24 @@
   document.addEventListener("submit", function (e) {
     const form = e.target;
     let url = null;
-    if (form.id === "compare-form") {
+    if (form.matches("form[data-table]")) {
+      const controller = window.__compareControllers
+        ? window.__compareControllers[form.dataset.table]
+        : null;
+      const files = controller ? controller.matchingPaths() : [];
+      if (files.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const hidden = form.querySelector('input[name="files"]');
+      if (hidden) hidden.value = files.join("\n");
+      url = "/compare/transfer";
+      const op = form.querySelector('select[name="op"]');
+      phaseLabel =
+        (op && op.value === "move" ? "Moving " : "Copying ") +
+        files.length + " filtered file(s) to " +
+        shortPath(form.querySelector('input[name="destination"]').value);
+    } else if (form.id === "compare-form") {
       url = "/compare/run";
       phaseLabel = "Scanning " + shortPath(fieldValue(form, "a")) +
         " vs " + shortPath(fieldValue(form, "b"));
@@ -93,6 +112,9 @@
     } else if (form.id === "purgatory-form") {
       url = "/compare/purgatory";
       phaseLabel = "Moving from " + shortPath(fieldValue(form, "b_root"));
+    } else if (form.id === "purgatory-form-dups") {
+      url = "/compare/purgatory";
+      phaseLabel = "Moving exact copies from " + shortPath(fieldValue(form, "b_root"));
     } else if (form.id === "organize-form") {
       url = "/organize/scan";
       phaseLabel = "Scanning " + shortPath(fieldValue(form, "source"));
@@ -104,6 +126,9 @@
       const against = fieldValue(form, "compare");
       phaseLabel = "Finding similar in " + shortPath(fieldValue(form, "root")) +
         (against.trim() ? " vs " + shortPath(against) : "");
+    } else if (form.id === "similar-swap-form") {
+      url = "/similar/swap";
+      phaseLabel = "Swapping better copies into " + shortPath(fieldValue(form, "a_root"));
     } else if (form.id === "verify-form") {
       url = "/verify/run";
       phaseLabel = "Verifying " + shortPath(fieldValue(form, "root"));
@@ -401,4 +426,427 @@ document.addEventListener("change", function (e) {
   refreshAll();
   // fields.js restores remembered values after this script runs.
   setTimeout(refreshAll, 600);
+})();
+
+// --- Cached-tree hints ------------------------------------------------------
+// Path fields with [data-cache-status] get a live hint saying what that tree
+// already has cached, layer by layer (green = cached, red = not yet).
+(function () {
+  const spans = new WeakMap();
+  const n = (v) => Number(v || 0).toLocaleString();
+
+  function layer(name, value, total) {
+    const cls = value > 0 ? "cache-on" : "cache-off";
+    return name + ' <span class="' + cls + '">' + n(value) + "</span>";
+  }
+
+  function update(el) {
+    let span = spans.get(el);
+    if (!span) {
+      span = document.createElement("span");
+      span.className = "hint cache-hint";
+      el.insertAdjacentElement("afterend", span);
+      spans.set(el, span);
+    }
+    const path = el.value.trim();
+    if (!path) {
+      span.textContent = "";
+      return;
+    }
+    fetch("/cache-status?path=" + encodeURIComponent(path))
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.cached_files > 0) {
+          span.innerHTML =
+            "cached: " + n(j.cached_files) + " file(s) · " +
+            layer("shallow", j.shallow) + " · " +
+            layer("deep", j.deep) + " · " +
+            layer("phash", j.phash) + " · " +
+            layer("exif", j.exif);
+        } else {
+          span.innerHTML = 'not cached <span class="cache-off">0</span>';
+        }
+      })
+      .catch(function () {});
+  }
+
+  let timer = null;
+  document.addEventListener("input", function (e) {
+    const el = e.target && e.target.closest && e.target.closest("[data-cache-status]");
+    if (!el) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => update(el), 300);
+  });
+
+  function refreshAll() {
+    document.querySelectorAll("[data-cache-status]").forEach((el) => {
+      if (el.value.trim()) update(el);
+    });
+  }
+  // Scans feed the cache, so refresh whenever one finishes (or fails partway).
+  window.refreshCacheHints = refreshAll;
+  refreshAll();
+  // fields.js restores remembered values after this script runs.
+  setTimeout(refreshAll, 600);
+})();
+
+// --- Compare results: full-set filtering ------------------------------------
+// The compare page embeds the FULL result sets as JSON so this filter searches
+// everything (including rows that don't fit on screen).
+(function () {
+  const RENDER_CAP = 500;
+  const payload = (id) => {
+    const el = document.getElementById(id);
+    if (!el) return null;
+    try {
+      return JSON.parse(el.textContent || "[]");
+    } catch (e) {
+      return null;
+    }
+  };
+  const aData = payload("compare-a-data");
+  const bData = payload("compare-b-data");
+  const dupData = payload("compare-dup-data");
+  const unreadData = payload("compare-unreadable-data");
+  if (!aData && !bData && !dupData && !unreadData) return;
+  const filterEl = document.getElementById("compare-filter");
+  const countEl = document.getElementById("compare-filter-count");
+
+  function pathRow(cls, path) {
+    const tr = document.createElement("tr");
+    tr.className = cls;
+    const td = document.createElement("td");
+    td.className = "path clickable";
+    td.dataset.reveal = path;
+    td.textContent = path;
+    tr.appendChild(td);
+    return tr;
+  }
+
+  function dupRow(entry) {
+    const tr = document.createElement("tr");
+    tr.className = entry.tree === "A" ? "row-a" : "row-b";
+    const badge = document.createElement("td");
+    const span = document.createElement("span");
+    span.className = "badge " + (entry.tree === "A" ? "badge-ok" : "badge-dirty");
+    span.textContent = entry.tree;
+    badge.appendChild(span);
+    tr.appendChild(badge);
+    const td = document.createElement("td");
+    td.className = "path clickable";
+    td.dataset.reveal = entry.path;
+    td.textContent = entry.path;
+    tr.appendChild(td);
+    return tr;
+  }
+
+  function fill(tbodyId, rows, build) {
+    const tbody = document.getElementById(tbodyId);
+    if (!tbody || !rows) return 0;
+    const q = (filterEl && filterEl.value ? filterEl.value : "").trim().toLowerCase();
+    const matching = rows.filter((r) => {
+      const p = typeof r === "string" ? r : r.path;
+      return !q || String(p).toLowerCase().includes(q);
+    });
+    tbody.innerHTML = "";
+    for (const r of matching.slice(0, RENDER_CAP)) {
+      tbody.appendChild(build(r));
+    }
+    if (matching.length > RENDER_CAP) {
+      const tr = document.createElement("tr");
+      tr.className = "more-row";
+      const td = document.createElement("td");
+      td.className = "muted";
+      td.textContent = "… " + (matching.length - RENDER_CAP) + " more match — refine the filter";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+    if (matching.length === 0) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.className = "muted";
+      td.textContent = q ? "No rows match the filter." : "None.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+    return matching.length;
+  }
+
+  function render() {
+    const aCount = fill("compare-table-a", aData, (p) => pathRow("row-a", p));
+    const dupCount = fill("compare-table-dups", dupData, dupRow);
+    const bCount = fill("compare-table-b", bData, (p) => pathRow("row-b", p));
+    const unCount = fill("compare-table-unreadable", unreadData, (p) => pathRow("row-b", p));
+    if (countEl) {
+      const q = (filterEl && filterEl.value ? filterEl.value : "").trim();
+      countEl.textContent =
+        (q ? 'matching "' + q + '": ' : "totals: ") +
+        aCount + " in A · " + dupCount + " duplicate row(s) · " +
+        bCount + " only in B · " + unCount + " unreadable";
+    }
+  }
+
+  if (filterEl) filterEl.addEventListener("input", render);
+  render();
+})();
+
+// --- Compare results: per-table filters with "more…" -----------------------
+// The compare page embeds its FULL result sets as JSON; each table gets its
+// own filter box and pages in more rows on demand.
+let initCompareTables = function () {};
+(function () {
+  const PAGE = 200;
+
+  const payload = (id) => {
+    const el = document.getElementById(id);
+    if (!el) return null;
+    try {
+      return JSON.parse(el.textContent || "[]");
+    } catch (e) {
+      return null;
+    }
+  };
+
+  function pathRow(cls, path) {
+    const tr = document.createElement("tr");
+    tr.className = cls;
+    const td = document.createElement("td");
+    td.className = "path clickable";
+    td.dataset.reveal = path;
+    td.textContent = path;
+    tr.appendChild(td);
+    return tr;
+  }
+
+  function dupRow(entry) {
+    const tr = document.createElement("tr");
+    tr.className = entry.tree === "A" ? "row-a" : "row-b";
+    const badgeTd = document.createElement("td");
+    const span = document.createElement("span");
+    span.className = "badge " + (entry.tree === "A" ? "badge-ok" : "badge-dirty");
+    span.textContent = entry.tree;
+    badgeTd.appendChild(span);
+    tr.appendChild(badgeTd);
+    const td = document.createElement("td");
+    td.className = "path clickable";
+    td.dataset.reveal = entry.path;
+    td.textContent = entry.path;
+    tr.appendChild(td);
+    return tr;
+  }
+
+  const controllers = {};
+
+  function cell(text, className) {
+    const td = document.createElement("td");
+    if (className) td.className = className;
+    td.textContent = text;
+    return td;
+  }
+
+  function revealCell(text) {
+    const td = document.createElement("td");
+    td.className = "path clickable";
+    td.dataset.reveal = text;
+    td.textContent = text;
+    return td;
+  }
+
+  function badgeCell(text, removable) {
+    const td = document.createElement("td");
+    const span = document.createElement("span");
+    span.className = "badge " + (removable ? "badge-dirty" : "badge-ok");
+    span.textContent = text;
+    td.appendChild(span);
+    return td;
+  }
+
+  function controller(cfg) {
+    const tbody = document.getElementById(cfg.tbody);
+    const filter = document.getElementById(cfg.filter);
+    const count = document.getElementById(cfg.count);
+    const more = document.getElementById(cfg.more);
+    if (!tbody || !cfg.rows) return;
+    let shown = 0;
+    let matching = [];
+
+    function matchingRows() {
+      const q = (filter && filter.value ? filter.value : "").trim().toLowerCase();
+      return cfg.rows.filter((r) => {
+        const p = typeof r === "string" ? r : r.path;
+        return !q || String(p).toLowerCase().includes(q);
+      });
+    }
+
+    function updateCount() {
+      if (!count) return;
+      const q = (filter && filter.value ? filter.value : "").trim();
+      count.textContent =
+        matching.length === 0
+          ? q
+            ? "no matches"
+            : "none"
+          : "showing " + Math.min(shown, matching.length) + " of " + matching.length +
+            (q ? " match" : "") + " (" + cfg.rows.length + " total)";
+    }
+
+    function appendPage() {
+      const next = matching.slice(shown, shown + PAGE);
+      for (const r of next) tbody.appendChild(cfg.build(r));
+      shown += next.length;
+      if (more) more.hidden = shown >= matching.length;
+      updateCount();
+    }
+
+    function reset() {
+      matching = matchingRows();
+      shown = 0;
+      tbody.innerHTML = "";
+      if (matching.length === 0) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.className = "muted";
+        td.textContent = (filter && filter.value ? "No rows match the filter." : "None.");
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        if (more) more.hidden = true;
+        updateCount();
+        return;
+      }
+      appendPage();
+    }
+
+    if (filter) filter.addEventListener("input", reset);
+    if (more) more.addEventListener("click", appendPage);
+    reset();
+
+    controllers[cfg.name] = {
+      matchingPaths: () => matching.map((r) => (typeof r === "string" ? r : r.path)),
+    };
+    window.__compareControllers = controllers;
+  }
+
+  initCompareTables = function () {
+    const a = payload("compare-a-data");
+    const b = payload("compare-b-data");
+    const dup = payload("compare-dup-data");
+    const unread = payload("compare-unreadable-data");
+    if (!a && !b && !dup && !unread) return;
+    controller({
+      name: "a",
+      tbody: "compare-table-a",
+      filter: "compare-filter-a",
+      count: "compare-count-a",
+      more: "compare-more-a",
+      rows: a || [],
+      build: (p) => pathRow("row-a", p),
+    });
+    controller({
+      name: "dups",
+      tbody: "compare-table-dups",
+      filter: "compare-filter-dups",
+      count: "compare-count-dups",
+      more: "compare-more-dups",
+      rows: dup || [],
+      build: dupRow,
+    });
+    controller({
+      name: "b",
+      tbody: "compare-table-b",
+      filter: "compare-filter-b",
+      count: "compare-count-b",
+      more: "compare-more-b",
+      rows: b || [],
+      build: (p) => pathRow("row-b", p),
+    });
+    controller({
+      name: "unreadable",
+      tbody: "compare-table-unreadable",
+      filter: "compare-filter-unreadable",
+      count: "compare-count-unreadable",
+      more: "compare-more-unreadable",
+      rows: unread || [],
+      build: (p) => pathRow("row-b", p),
+    });
+  };
+
+  // --- Similar tab tables -------------------------------------------------
+  function similarGroupRow(r) {
+    const tr = document.createElement("tr");
+    tr.appendChild(revealCell(r.keeper));
+    tr.appendChild(revealCell(r.candidate));
+    tr.appendChild(badgeCell("remove", true));
+    tr.appendChild(cell(r.distance));
+    tr.appendChild(cell(r.keeper_pixels));
+    tr.appendChild(cell(r.candidate_pixels));
+    tr.appendChild(cell(r.keeper_bytes));
+    tr.appendChild(cell(r.candidate_bytes));
+    return tr;
+  }
+
+  function similarMatchRow(r) {
+    const tr = document.createElement("tr");
+    tr.appendChild(revealCell(r.a));
+    tr.appendChild(revealCell(r.b));
+    tr.appendChild(badgeCell(r.verdict, r.removable));
+    tr.appendChild(cell(r.distance));
+    tr.appendChild(cell(r.a_pixels));
+    tr.appendChild(cell(r.b_pixels));
+    tr.appendChild(cell(r.a_bytes));
+    tr.appendChild(cell(r.b_bytes));
+    return tr;
+  }
+
+  let initSimilarTables = function () {};
+  function similarDupRow(r) {
+    const tr = document.createElement("tr");
+    tr.appendChild(revealCell(r.keeper));
+    tr.appendChild(revealCell(r.path));
+    return tr;
+  }
+
+  initSimilarTables = function () {
+    const groups = payload("similar-rows-data");
+    const matches = payload("similar-matches-data");
+    const dups = payload("similar-dups-data");
+    if (!groups && !matches && !dups) return;
+    if (dups) {
+      controller({
+        name: "similar-dups",
+        tbody: "similar-table-dups",
+        filter: "similar-filter-dups",
+        count: "similar-count-dups",
+        more: "similar-more-dups",
+        rows: dups,
+        build: similarDupRow,
+      });
+    }
+    if (groups) {
+      controller({
+        name: "similar-rows",
+        tbody: "similar-table-rows",
+        filter: "similar-filter-rows",
+        count: "similar-count-rows",
+        more: "similar-more-rows",
+        rows: groups,
+        build: similarGroupRow,
+      });
+    }
+    if (matches) {
+      controller({
+        name: "similar-matches",
+        tbody: "similar-table-matches",
+        filter: "similar-filter-matches",
+        count: "similar-count-matches",
+        more: "similar-more-matches",
+        rows: matches,
+        build: similarMatchRow,
+      });
+    }
+  };
+
+  window.__initSimilarTables = initSimilarTables;
+
+  // Direct load (results already in the document).
+  initCompareTables();
 })();

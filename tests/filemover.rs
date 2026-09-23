@@ -374,3 +374,58 @@ fn organize_skips_files_without_dates() {
     assert!(undated.exists());
     assert!(!dest.exists() || std::fs::read_dir(&dest).unwrap().next().is_none());
 }
+
+#[test]
+fn table_transfer_copies_verifies_and_moves_flat() {
+    use dedupe2::filemover::{transfer_files_with_progress, Operation};
+
+    let root = tempfile::tempdir().unwrap();
+    let one = root.path().join("one");
+    let two = root.path().join("two");
+    let dest = root.path().join("export");
+    std::fs::create_dir_all(&one).unwrap();
+    std::fs::create_dir_all(&two).unwrap();
+    std::fs::create_dir_all(&dest).unwrap();
+
+    let a = one.join("photo.jpg");
+    let b = two.join("photo.jpg"); // same name, different dir
+    std::fs::write(&a, b"content-a").unwrap();
+    std::fs::write(&b, b"content-b").unwrap();
+    // Pre-existing different file with the same name: must never overwrite.
+    std::fs::write(dest.join("photo.jpg"), b"already-here").unwrap();
+
+    // Copy: flat destination, collision renamed, sources intact.
+    let outcome = transfer_files_with_progress(
+        &[a.clone(), b.clone()],
+        &dest,
+        Operation::Copy,
+        &|_, _| {},
+    );
+    assert_eq!(outcome.planned, 2);
+    assert_eq!(outcome.transferred, 2, "{outcome:?}");
+    assert_eq!(outcome.renamed_on_collision, 2);
+    assert!(outcome.failures.is_empty(), "{outcome:?}");
+    assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), b"already-here");
+    assert_eq!(std::fs::read(dest.join("photo (1).jpg")).unwrap(), b"content-a");
+    assert_eq!(std::fs::read(dest.join("photo (2).jpg")).unwrap(), b"content-b");
+    assert!(a.exists() && b.exists(), "copy keeps the sources");
+
+    // Move: verified then removed.
+    let dest2 = root.path().join("export2");
+    let outcome =
+        transfer_files_with_progress(&[a.clone()], &dest2, Operation::Move, &|_, _| {});
+    assert_eq!(outcome.transferred, 1, "{outcome:?}");
+    assert!(!a.exists(), "move removes the source after verification");
+    assert_eq!(std::fs::read(dest2.join("photo.jpg")).unwrap(), b"content-a");
+
+    // Missing sources are reported and nothing else is affected.
+    let outcome = transfer_files_with_progress(
+        &[root.path().join("gone.jpg"), b.clone()],
+        &dest2,
+        Operation::Copy,
+        &|_, _| {},
+    );
+    assert_eq!(outcome.transferred, 1);
+    assert_eq!(outcome.failures.len(), 1);
+    assert!(b.exists());
+}

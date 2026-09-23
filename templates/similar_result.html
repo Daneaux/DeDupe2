@@ -29,31 +29,53 @@
     </div>
   </div>
 
+  {% if duplicate_count > 0 %}
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Exact duplicates</span>
+      <span class="badge badge-dirty">{{ duplicate_count }}</span>
+      <span class="collection-sub">identical content (64kb head + full content hash) — eliminated before similarity</span>
+    </div>
+    <div class="table-tools">
+      <input type="text" class="table-filter" id="similar-filter-dups" placeholder="filter this table…" />
+      <span class="hint" id="similar-count-dups"></span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Keep (biggest file)</th><th>Exact copy</th></tr></thead>
+        <tbody id="similar-table-dups"></tbody>
+      </table>
+    </div>
+    <button type="button" class="btn btn-small btn-secondary table-more" id="similar-more-dups" hidden>more…</button>
+    <form method="post" action="/compare/purgatory" id="purgatory-form-dups" class="merge-form">
+      <input type="hidden" name="files" value="{{ duplicates_input }}" />
+      <input type="hidden" name="b_root" value="{{ root }}" />
+      <label class="field">
+        <span>Purgatory folder</span>
+        <input type="text" name="purgatory" placeholder="/path/to/purgatory" />
+        <span class="hint">Step 1 — moves the exact extra copies out, keeping the tree layout. The keeper stays.</span>
+      </label>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-small btn-secondary">Move {{ duplicate_count }} exact copies to purgatory</button>
+      </div>
+    </form>
+  </article>
+  {% endif %}
+
   {% if group_count == 0 %}
   <p class="placeholder">No near-duplicates found.</p>
   {% else %}
+  <div class="table-tools">
+    <input type="text" class="table-filter" id="similar-filter-rows" placeholder="filter this table…" />
+    <span class="hint" id="similar-count-rows"></span>
+  </div>
   <div class="table-scroll">
     <table class="compare-table">
       <thead><tr><th>Keep (biggest file)</th><th>Copy</th><th>Verdict</th><th>Distance</th><th>Keep px</th><th>Copy px</th><th>Keep size</th><th>Copy size</th></tr></thead>
-      <tbody>
-        {% for r in rows %}
-        <tr>
-          <td class="path clickable" data-reveal="{{ r.keeper }}">{{ r.keeper }}</td>
-          <td class="path clickable" data-reveal="{{ r.candidate }}">{{ r.candidate }}</td>
-          <td><span class="badge badge-dirty">remove</span></td>
-          <td>{{ r.distance }}</td>
-          <td>{{ r.keeper_pixels }}</td>
-          <td>{{ r.candidate_pixels }}</td>
-          <td>{{ r.keeper_bytes }}</td>
-          <td>{{ r.candidate_bytes }}</td>
-        </tr>
-        {% endfor %}
-        {% if rows_more > 0 %}
-        <tr class="more-row"><td colspan="6" class="muted">… {{ rows_more }} more not shown</td></tr>
-        {% endif %}
-      </tbody>
+      <tbody id="similar-table-rows"></tbody>
     </table>
   </div>
+  <button type="button" class="btn btn-small btn-secondary table-more" id="similar-more-rows" hidden>more…</button>
 
   <form method="post" action="/compare/purgatory" id="purgatory-form" class="merge-form">
     <input type="hidden" name="files" value="{{ candidates_input }}" />
@@ -73,3 +95,7 @@
     <a class="btn btn-secondary" href="/similar">Back to similar</a>
   </div>
 </section>
+
+<script id="similar-rows-data" type="application/json">{{ rows_json|safe }}</script>
+
+<script id="similar-dups-data" type="application/json">{{ duplicates_json|safe }}</script>

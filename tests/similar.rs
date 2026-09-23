@@ -250,11 +250,19 @@ fn cross_tree_compare_flags_only_worse_b_copies() {
     let cache = std::sync::Mutex::new(ScanCache::new());
     let outcome = find_similar_between_with_progress(&a, &b, &cache, &|_, _| {}).unwrap();
 
-    // Three matches against the A original; the unrelated photo matches
-    // nothing. Size on disk decides: B's downscale and exact copy lose to A
-    // (smaller / tie), while the upscaled B copy is the bigger file and is
-    // kept.
-    assert_eq!(outcome.matches.len(), 3, "{outcome:?}");
+    // The exact copy is eliminated as a duplicate before similarity; the
+    // downscale and the upscale remain as similar matches against the A
+    // original, and the unrelated photo matches nothing.
+    assert_eq!(outcome.exact_duplicates.len(), 1, "{outcome:?}");
+    assert_eq!(outcome.exact_duplicates[0].keeper, keep);
+    assert_eq!(outcome.exact_duplicates[0].path, exact);
+    let mut matches: Vec<String> = outcome
+        .matches
+        .iter()
+        .map(|m| m.b.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    matches.sort();
+    assert_eq!(matches, vec!["downscaled.jpg", "upscaled-2x.jpg"]);
     assert!(outcome.matches.iter().all(|m| m.a == keep));
     assert!(outcome.removable_b.contains(&down));
     assert!(
@@ -262,8 +270,44 @@ fn cross_tree_compare_flags_only_worse_b_copies() {
         "the bigger B file is kept despite the extra pixels"
     );
     assert!(
-        outcome.removable_b.contains(&exact),
-        "an exact B copy of an A file is removable (A is the record)"
+        !outcome.removable_b.contains(&exact),
+        "exact copies are handled by the duplicate step, not similarity"
+    );
+}
+
+#[test]
+fn exact_duplicates_are_eliminated_before_similarity_in_self_mode() {
+    let root = tempfile::tempdir().unwrap();
+    let original = sample("jpg-exif-mod/image1.JPG");
+    let a = root.path().join("copy-a.jpg");
+    let b = root.path().join("copy-b.jpg");
+    let scaled = root.path().join("scaled.jpg");
+    std::fs::copy(&original, &a).unwrap();
+    std::fs::copy(&original, &b).unwrap();
+    write_scaled(&original, &scaled, 0.5, 80);
+
+    let cache = std::sync::Mutex::new(ScanCache::new());
+    let outcome = find_similar_with_progress(root.path(), &cache, &|_, _| {}).unwrap();
+
+    // Two identical copies: one stays, the other is an exact duplicate.
+    assert_eq!(outcome.exact_duplicates.len(), 1, "{outcome:?}");
+    let dup = &outcome.exact_duplicates[0];
+    assert_eq!(dup.keeper, a, "keeper by deterministic tie-break");
+    assert_eq!(dup.path, b);
+
+    // The similarity table holds only the genuinely near-duplicate pair.
+    assert_eq!(outcome.groups.len(), 1, "{outcome:?}");
+    let group = &outcome.groups[0];
+    assert_eq!(group.keeper, a);
+    let candidates: Vec<String> = group
+        .candidates
+        .iter()
+        .map(|c| c.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(candidates, vec!["scaled.jpg"]);
+    assert!(
+        !outcome.removable.contains(&b),
+        "exact extras belong to the duplicate step"
     );
 }
 
@@ -291,5 +335,154 @@ fn cross_tree_compare_never_flags_a_better_b_copy() {
     let m = &outcome.matches[0];
     assert!(m.b_is_better, "B has the information, A is the downscale");
     assert!(!m.removable);
+    assert!(outcome.removable_b.is_empty());
+}
+
+#[test]
+fn swap_moves_worse_a_to_purgatory_and_better_b_into_a() {
+    use dedupe2::filemover::swap_better_copies_with_progress;
+
+    let root = tempfile::tempdir().unwrap();
+    let a_root = root.path().join("library");
+    let b_root = root.path().join("candidate");
+    let purgatory = root.path().join("purgatory");
+    std::fs::create_dir_all(&a_root).unwrap();
+    std::fs::create_dir_all(&b_root).unwrap();
+
+    let original = sample("jpg-exif-mod/image1.JPG");
+    let better_bytes = std::fs::read(&original).unwrap();
+    let a_worse = a_root.join("downscaled.jpg");
+    let b_better = b_root.join("downscaled.jpg");
+    write_scaled(&original, &a_worse, 0.5, 80);
+    std::fs::copy(&original, &b_better).unwrap();
+    let worse_bytes = std::fs::read(&a_worse).unwrap();
+    assert_ne!(worse_bytes, better_bytes);
+
+    let outcome = swap_better_copies_with_progress(
+        &[(a_worse.clone(), b_better.clone())],
+        &a_root,
+        &b_root,
+        &purgatory,
+        &|_, _| {},
+    );
+
+    assert_eq!(outcome.planned, 1);
+    assert_eq!(outcome.swapped, 1, "{outcome:?}");
+    assert_eq!(outcome.purged, 1);
+    assert!(outcome.failures.is_empty(), "{outcome:?}");
+
+    // A now holds the better copy, byte-identical to B's old file.
+    assert_eq!(std::fs::read(&a_worse).unwrap(), better_bytes);
+    // B's copy is gone; the worse A copy is safe in purgatory with A's layout.
+    assert!(!b_better.exists());
+    assert_eq!(
+        std::fs::read(purgatory.join("downscaled.jpg")).unwrap(),
+        worse_bytes,
+        "purgatory holds exactly the worse A copy"
+    );
+}
+
+#[test]
+fn swap_failure_leaves_everything_recoverable() {
+    use dedupe2::filemover::swap_better_copies_with_progress;
+
+    let root = tempfile::tempdir().unwrap();
+    let a_root = root.path().join("library");
+    let b_root = root.path().join("candidate");
+    let purgatory = root.path().join("purgatory");
+    std::fs::create_dir_all(&a_root).unwrap();
+    std::fs::create_dir_all(&b_root).unwrap();
+
+    let original = sample("jpg-exif-mod/image1.JPG");
+    let a_worse = a_root.join("downscaled.jpg");
+    write_scaled(&original, &a_worse, 0.5, 80);
+    let missing_b = b_root.join("gone.jpg"); // does not exist
+
+    let outcome = swap_better_copies_with_progress(
+        &[(a_worse.clone(), missing_b.clone())],
+        &a_root,
+        &b_root,
+        &purgatory,
+        &|_, _| {},
+    );
+
+    assert_eq!(outcome.swapped, 0);
+    assert_eq!(outcome.failures.len(), 1);
+    // Phase 1 succeeded: A's worse copy is safe in purgatory, nothing lost.
+    assert!(!a_worse.exists());
+    assert!(purgatory.join("downscaled.jpg").exists());
+    assert!(outcome.failures[0].1.contains("safe in purgatory"), "{outcome:?}");
+}
+
+#[test]
+fn black_and_white_copy_is_not_similar_to_its_color_original() {
+    let root = tempfile::tempdir().unwrap();
+    let color_source = sample("jpg-exif-mod/image1.JPG");
+    let color = root.path().join("color.jpg");
+    let gray = root.path().join("gray.jpg");
+    let scaled = root.path().join("scaled-color.jpg");
+    std::fs::copy(&color_source, &color).unwrap();
+
+    let img = image::open(&color_source).unwrap();
+    img.to_luma8()
+        .save_with_format(&gray, image::ImageFormat::Jpeg)
+        .unwrap();
+    let rgb = img.to_rgb8();
+    image::imageops::resize(&rgb, 600, 800, image::imageops::FilterType::Lanczos3)
+        .save_with_format(&scaled, image::ImageFormat::Jpeg)
+        .unwrap();
+
+    // The B&W conversion hashes identically to the color original — that is
+    // exactly why the chroma gate has to exist.
+    let dist = dedupe2::image_reader::distance(
+        dedupe2::image_reader::phash(&color).unwrap().hash,
+        dedupe2::image_reader::phash(&gray).unwrap().hash,
+    );
+    assert_eq!(dist, 0, "pHash alone sees them as identical");
+
+    let cache = std::sync::Mutex::new(ScanCache::new());
+    let outcome = find_similar_with_progress(root.path(), &cache, &|_, _| {}).unwrap();
+
+    assert_eq!(outcome.groups.len(), 1, "{outcome:?}");
+    let group = &outcome.groups[0];
+    assert_eq!(group.keeper, color, "color original is the keeper");
+    let candidates: Vec<String> = group
+        .candidates
+        .iter()
+        .map(|c| c.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(candidates, vec!["scaled-color.jpg"], "{outcome:?}");
+    assert!(
+        !outcome.removable.contains(&gray),
+        "the B&W copy is a different picture and must never be a removal candidate"
+    );
+}
+
+#[test]
+fn cross_tree_compare_ignores_black_and_white_counterparts() {
+    use dedupe2::Scanner::similar::find_similar_between_with_progress;
+
+    let root = tempfile::tempdir().unwrap();
+    let a_root = root.path().join("library");
+    let b_root = root.path().join("candidate");
+    std::fs::create_dir_all(&a_root).unwrap();
+    std::fs::create_dir_all(&b_root).unwrap();
+
+    let color_source = sample("jpg-exif-mod/image1.JPG");
+    let a_color = a_root.join("photo.jpg");
+    std::fs::copy(&color_source, &a_color).unwrap();
+
+    let img = image::open(&color_source).unwrap();
+    let b_gray = b_root.join("photo-bw.jpg");
+    img.to_luma8()
+        .save_with_format(&b_gray, image::ImageFormat::Jpeg)
+        .unwrap();
+
+    let cache = std::sync::Mutex::new(ScanCache::new());
+    let outcome = find_similar_between_with_progress(&a_root, &b_root, &cache, &|_, _| {}).unwrap();
+    assert!(
+        outcome.matches.is_empty(),
+        "color vs black-and-white is not a match: {outcome:?}"
+    );
     assert!(outcome.removable_b.is_empty());
 }

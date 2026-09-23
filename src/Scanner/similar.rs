@@ -2,10 +2,14 @@
 //! recompressed copies of lossy images (jpg with jpg, heic with heic).
 //!
 //! Files are perceptual-hashed (through the scan cache, so the work is only
-//! done once), grouped by Hamming distance, and each group is reduced to a
+//! done once) and grouped by Hamming distance, with one extra gate: pHash
+//! works on luminance structure, so a black-and-white copy hashes identically
+//! to its color original. A mean-chroma comparison keeps achromatic and
+//! chromatic versions of a picture apart. Each group is then reduced to a
 //! keeper — the biggest file on disk — plus the smaller copies as removal
 //! candidates.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -13,7 +17,9 @@ use std::sync::Mutex;
 use rayon::prelude::*;
 
 use crate::image_reader::{collect_image_files, distance, lossy_kind, Phash, SIMILAR_MAX_DISTANCE};
-use crate::Scanner::cache::{cached_phash, ScanCache};
+use crate::Scanner::cache::{
+    full_content_cached, perceptual_cached, shallow_hashes_cached, ScanCache,
+};
 
 /// One other copy of the same picture, with the evidence for its verdict.
 #[derive(Debug, Clone)]
@@ -37,12 +43,23 @@ pub struct SimilarGroup {
     pub candidates: Vec<SimilarCandidate>,
 }
 
+/// An exact duplicate found before the similarity pass: identical content
+/// (shallow 64kb hash equal, confirmed with the full content hash). `keeper`
+/// is the copy to keep, `path` the extra copy.
+#[derive(Debug, Clone)]
+pub struct ExactDuplicate {
+    pub keeper: PathBuf,
+    pub path: PathBuf,
+}
+
 #[derive(Debug, Default)]
 pub struct SimilarOutcome {
     /// Supported media files found in the tree.
     pub scanned: usize,
     /// Files of a lossy kind that could be perceptual-hashed.
     pub lossy: usize,
+    /// Exact duplicates, eliminated before similarity analysis.
+    pub exact_duplicates: Vec<ExactDuplicate>,
     pub groups: Vec<SimilarGroup>,
     /// Total members across all groups (keepers + candidates).
     pub candidates: usize,
@@ -69,28 +86,69 @@ pub fn find_similar_with_progress(
     let total = lossy.len();
     let done = AtomicUsize::new(0);
 
-    struct Entry {
-        path: PathBuf,
-        kind: u8,
-        phash: Phash,
-        bytes: u64,
-    }
-
-    let entries: Vec<Entry> = lossy
+    let entries: Vec<LossyEntry> = lossy
         .par_iter()
         .filter_map(|(_, path, kind)| {
-            let phash = cached_phash(cache, path);
+            let perceptual = perceptual_cached(cache, path);
             let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
-            phash.map(|phash| Entry {
+            perceptual.map(|(phash, chroma)| LossyEntry {
                 path: path.clone(),
                 kind: *kind,
                 phash,
+                chroma,
                 bytes,
             })
         })
         .collect();
     let lossy_hashed = entries.len();
+
+    // Exact duplicates first (shallow 64kb hash, confirmed with the full
+    // content hash): they are not "similar", they are the same file. The
+    // extra copies are excluded from similarity analysis.
+    let mut exact_duplicates: Vec<ExactDuplicate> = Vec::new();
+    let mut excluded: HashSet<usize> = HashSet::new();
+    {
+        let paths: Vec<PathBuf> = entries.iter().map(|e| e.path.clone()).collect();
+        let shallow = shallow_hashes_cached(cache, &paths, 64 * 1024, &|_, _| {});
+        let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (i, (hash, decoded)) in shallow.iter().enumerate() {
+            if *decoded {
+                buckets.entry(*hash).or_default().push(i);
+            }
+        }
+        for members in buckets.into_values() {
+            if members.len() < 2 {
+                continue;
+            }
+            let mut by_content: HashMap<u64, Vec<usize>> = HashMap::new();
+            for &i in &members {
+                if let Ok(hash) = full_content_cached(cache, &entries[i].path) {
+                    by_content.entry(hash).or_default().push(i);
+                }
+            }
+            for mut ids in by_content.into_values() {
+                if ids.len() < 2 {
+                    continue;
+                }
+                ids.sort_by_key(|&i| {
+                    (
+                        std::cmp::Reverse(entries[i].bytes),
+                        std::cmp::Reverse(entries[i].phash.pixels()),
+                        entries[i].path.clone(),
+                    )
+                });
+                let keeper = entries[ids[0]].path.clone();
+                for &extra in &ids[1..] {
+                    excluded.insert(extra);
+                    exact_duplicates.push(ExactDuplicate {
+                        keeper: keeper.clone(),
+                        path: entries[extra].path.clone(),
+                    });
+                }
+            }
+        }
+    }
 
     // Union-find over similar pairs (O(n²) popcounts; the file set here is
     // already narrowed to lossy images).
@@ -106,8 +164,17 @@ pub fn find_similar_with_progress(
     let mut unions = 0usize;
     for i in 0..n {
         progress(unions, n.max(1));
+        if excluded.contains(&i) {
+            continue;
+        }
         for j in (i + 1)..n {
+            if excluded.contains(&j) {
+                continue;
+            }
             if entries[i].kind != entries[j].kind {
+                continue;
+            }
+            if !chroma_compatible(entries[i].chroma, entries[j].chroma) {
                 continue;
             }
             if distance(entries[i].phash.hash, entries[j].phash.hash) <= SIMILAR_MAX_DISTANCE {
@@ -178,9 +245,12 @@ pub fn find_similar_with_progress(
     removable_total.sort();
     removable_total.dedup();
 
+    exact_duplicates.sort_by(|a, b| a.path.cmp(&b.path));
+
     Ok(SimilarOutcome {
         scanned,
         lossy: lossy_hashed,
+        exact_duplicates,
         groups,
         candidates: candidates_total,
         removable: removable_total,
@@ -212,6 +282,8 @@ pub struct SimilarCompareOutcome {
     pub scanned_b: usize,
     pub lossy_a: usize,
     pub lossy_b: usize,
+    /// Exact duplicates between the trees, eliminated before similarity.
+    pub exact_duplicates: Vec<ExactDuplicate>,
     pub matches: Vec<SimilarMatch>,
     /// B-side files eligible for the purgatory move (deduplicated, sorted).
     pub removable_b: Vec<PathBuf>,
@@ -235,7 +307,33 @@ struct LossyEntry {
     path: PathBuf,
     kind: u8,
     phash: Phash,
+    /// Mean chroma (colorfulness), when measurable.
+    chroma: Option<u8>,
     bytes: u64,
+}
+
+/// A chroma this low means the picture is effectively black and white.
+const ACHROMATIC_MAX: u8 = 6;
+/// The other side must be at least this colorful for the pair to count as
+/// "color vs black-and-white" rather than two versions of a gray picture.
+const CHROMATIC_MIN: u8 = 10;
+/// A bigger gap than this (with a big ratio) also counts as different
+/// colorfulness, catching heavily desaturated edits.
+const CHROMA_MAX_DIFF: i32 = 35;
+
+/// Whether two pictures are color-compatible enough to be the same picture.
+fn chroma_compatible(a: Option<u8>, b: Option<u8>) -> bool {
+    let (Some(a), Some(b)) = (a, b) else {
+        return true; // unknown: fall back to the phash verdict
+    };
+    let (lo, hi) = (a.min(b), a.max(b));
+    if lo <= ACHROMATIC_MAX && hi >= CHROMATIC_MIN {
+        return false; // one side is black and white, the other is not
+    }
+    if (hi as i32 - lo as i32) >= CHROMA_MAX_DIFF && hi >= lo.saturating_mul(2) {
+        return false; // drastically different colorfulness
+    }
+    true
 }
 
 fn collect_lossy(
@@ -255,13 +353,14 @@ fn collect_lossy(
     let entries: Vec<LossyEntry> = lossy
         .par_iter()
         .filter_map(|(path, kind)| {
-            let phash = cached_phash(cache, path);
+            let perceptual = perceptual_cached(cache, path);
             let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
-            phash.map(|phash| LossyEntry {
+            perceptual.map(|(phash, chroma)| LossyEntry {
                 path: path.clone(),
                 kind: *kind,
                 phash,
+                chroma,
                 bytes,
             })
         })
@@ -282,13 +381,59 @@ pub fn find_similar_between_with_progress(
     let (scanned_a, a_entries) = collect_lossy(a_root, cache, progress)?;
     let (scanned_b, b_entries) = collect_lossy(b_root, cache, progress)?;
 
-    // For each B file, the best A match: nearest phash, then larger A copy.
+    // Exact duplicates first: shallow 64kb hash match between the trees,
+    // confirmed with the full content hash (cache-backed). Those B files are
+    // the same file as an A copy, not "similar", and skip the similarity
+    // analysis entirely.
+    let mut exact_duplicates: Vec<ExactDuplicate> = Vec::new();
+    let mut duplicate_b: HashSet<usize> = HashSet::new();
+    {
+        let a_paths: Vec<PathBuf> = a_entries.iter().map(|e| e.path.clone()).collect();
+        let b_paths: Vec<PathBuf> = b_entries.iter().map(|e| e.path.clone()).collect();
+        let a_shallow = shallow_hashes_cached(cache, &a_paths, 64 * 1024, &|_, _| {});
+        let b_shallow = shallow_hashes_cached(cache, &b_paths, 64 * 1024, &|_, _| {});
+        let mut a_by_hash: HashMap<u64, usize> = HashMap::new();
+        for (i, (hash, decoded)) in a_shallow.iter().enumerate() {
+            if *decoded {
+                a_by_hash.entry(*hash).or_insert(i);
+            }
+        }
+        for (j, (hash, decoded)) in b_shallow.iter().enumerate() {
+            if !*decoded {
+                continue;
+            }
+            let Some(&i) = a_by_hash.get(hash) else {
+                continue;
+            };
+            let content_a = full_content_cached(cache, &a_entries[i].path);
+            let content_b = full_content_cached(cache, &b_entries[j].path);
+            if let (Ok(content_a), Ok(content_b)) = (content_a, content_b) {
+                if content_a == content_b {
+                    duplicate_b.insert(j);
+                    exact_duplicates.push(ExactDuplicate {
+                        keeper: a_entries[i].path.clone(),
+                        path: b_entries[j].path.clone(),
+                    });
+                }
+            }
+        }
+    }
+    exact_duplicates.sort_by(|a, b| a.path.cmp(&b.path));
+
+    // For each remaining B file, the best A match: nearest phash, then
+    // larger A copy.
     let mut matches = Vec::new();
     let mut removable_b = Vec::new();
-    for b in &b_entries {
+    for (j, b) in b_entries.iter().enumerate() {
+        if duplicate_b.contains(&j) {
+            continue;
+        }
         let mut best: Option<(&LossyEntry, u32)> = None;
         for a in &a_entries {
             if a.kind != b.kind {
+                continue;
+            }
+            if !chroma_compatible(a.chroma, b.chroma) {
                 continue;
             }
             let distance = distance(a.phash.hash, b.phash.hash);
@@ -338,6 +483,7 @@ pub fn find_similar_between_with_progress(
         scanned_b,
         lossy_a: a_entries.len(),
         lossy_b: b_entries.len(),
+        exact_duplicates,
         matches,
         removable_b,
     })

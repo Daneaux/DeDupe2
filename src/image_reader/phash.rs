@@ -89,6 +89,35 @@ pub fn phash(path: &Path) -> Option<Phash> {
     }
 }
 
+/// Mean chroma (max-min per RGB pixel, 0-255) — a cheap colorfulness score.
+/// pHash works on luminance structure, so a black-and-white conversion of a
+/// color photo hashes identically; comparing colorfulness separates them.
+/// `None` for images without RGB channels.
+pub fn mean_chroma(image: &ImageData) -> Option<u8> {
+    if image.cpp < 3 || image.width == 0 || image.height == 0 {
+        return None;
+    }
+    let mut sum: u64 = 0;
+    let mut count: u64 = 0;
+    for p in 0..(image.width * image.height) {
+        let base = p * image.cpp;
+        let (r, g, b) = match &image.data {
+            PixelData::U8(v) => (v[base] as i32, v[base + 1] as i32, v[base + 2] as i32),
+            PixelData::U16(v) => (
+                (v[base] >> 8) as i32,
+                (v[base + 1] >> 8) as i32,
+                (v[base + 2] >> 8) as i32,
+            ),
+        };
+        sum += (r.max(g).max(b) - r.min(g).min(b)) as u64;
+        count += 1;
+    }
+    if count == 0 {
+        return None;
+    }
+    Some((sum / count) as u8)
+}
+
 /// Number of differing bits.
 pub fn distance(a: u64, b: u64) -> u32 {
     (a ^ b).count_ones()

@@ -1105,3 +1105,468 @@ async fn scans_reject_nonexistent_trees_up_front() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn similar_swap_replaces_worse_a_copies_with_better_b_copies() {
+    let root = tempfile::tempdir().unwrap();
+    let a_root = root.path().join("library");
+    let b_root = root.path().join("candidate");
+    let purgatory = root.path().join("purgatory");
+    std::fs::create_dir_all(&a_root).unwrap();
+    std::fs::create_dir_all(&b_root).unwrap();
+    std::fs::create_dir_all(&purgatory).unwrap();
+
+    let original = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+    let better_bytes = std::fs::read(&original).unwrap();
+
+    // A holds the downscaled copy; B holds the original (bigger file).
+    let img = image::open(&original).unwrap();
+    let small = img.resize_exact(
+        (img.width() as f32 * 0.5) as u32,
+        (img.height() as f32 * 0.5) as u32,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let a_worse = a_root.join("photo.jpg");
+    small.save_with_format(&a_worse, image::ImageFormat::Jpeg).unwrap();
+    let b_better = b_root.join("photo.jpg");
+    std::fs::copy(&original, &b_better).unwrap();
+
+    // The compare result offers a swap for this pair.
+    let res = app()
+        .oneshot(form_request(
+            "/similar/run",
+            format!(
+                "root={}&compare={}",
+                urlencode(&a_root.display().to_string()),
+                urlencode(&b_root.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("swap available"), "{html}");
+    assert!(html.contains("Swap 1 better B copies into A"), "{html}");
+
+    // Run the swap.
+    let swaps = format!("{}\t{}", a_worse.display(), b_better.display());
+    let res = app()
+        .oneshot(form_request(
+            "/similar/swap",
+            format!(
+                "swaps={}&a_root={}&b_root={}&purgatory={}",
+                urlencode(&swaps),
+                urlencode(&a_root.display().to_string()),
+                urlencode(&b_root.display().to_string()),
+                urlencode(&purgatory.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("Swap Complete"), "{html}");
+
+    // A now holds the better copy; the worse one is in purgatory.
+    assert_eq!(std::fs::read(&a_worse).unwrap(), better_bytes);
+    assert!(!b_better.exists());
+    assert!(purgatory.join("photo.jpg").exists());
+}
+
+#[tokio::test]
+async fn compare_results_embed_full_sets_for_filtering() {
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    std::fs::create_dir_all(a.join("2006/trip")).unwrap();
+    std::fs::create_dir_all(b.join("2006/trip")).unwrap();
+    let img = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/TestImages/jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
+    std::fs::write(a.join("2006/trip/IMG_0100.jpg"), &img).unwrap();
+    std::fs::write(b.join("2006/trip/IMG_0100.jpg"), &img).unwrap();
+    // A real A-only photo (undecodable A-side files are ignored by design).
+    let a_only = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/TestImages/jpg-dupe-diff-size/IMG_2571.jpg"),
+    )
+    .unwrap();
+    std::fs::write(a.join("2006/keeper-only.jpg"), &a_only).unwrap();
+    std::fs::write(b.join("2006/new.jpg"), b"only in b").unwrap();
+
+    let res = app()
+        .oneshot(form_request(
+            "/compare/run",
+            format!(
+                "a={}&b={}",
+                urlencode(&a.display().to_string()),
+                urlencode(&b.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+
+    // The per-table filters and the embedded full-result payloads exist...
+    for id in [
+        "compare-a-data",
+        "compare-b-data",
+        "compare-dup-data",
+        "compare-unreadable-data",
+    ] {
+        assert!(html.contains(id), "missing payload {id}");
+    }
+    // ...and they carry the full sets (including the 2006 paths), so the
+    // filter can search beyond the visible rows.
+    assert!(html.contains("2006/keeper-only.jpg"), "{html}");
+    assert!(html.contains("2006/new.jpg"), "{html}");
+    assert!(html.contains("2006/trip/IMG_0100.jpg"), "dup path missing");
+}
+
+#[tokio::test]
+async fn compare_tables_have_their_own_filters_and_more_buttons() {
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let img = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/TestImages/jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
+    std::fs::write(a.join("one.jpg"), &img).unwrap();
+    std::fs::write(b.join("one.jpg"), &img).unwrap();
+
+    let res = app()
+        .oneshot(form_request(
+            "/compare/run",
+            format!(
+                "a={}&b={}",
+                urlencode(&a.display().to_string()),
+                urlencode(&b.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+
+    for suffix in ["a", "dups", "b", "unreadable"] {
+        assert!(
+            html.contains(&format!("id=\"compare-filter-{suffix}\"")),
+            "missing per-table filter for {suffix}"
+        );
+        assert!(
+            html.contains(&format!("id=\"compare-more-{suffix}\"")),
+            "missing more button for {suffix}"
+        );
+        assert!(
+            html.contains(&format!("id=\"compare-count-{suffix}\"")),
+            "missing count for {suffix}"
+        );
+    }
+    assert!(!html.contains("id=\"compare-filter\""), "old global filter should be gone");
+    // ...and each table has a copy/move action tied to its filter.
+    for suffix in ["a", "dups", "b", "unreadable"] {
+        assert!(
+            html.contains(&format!("id=\"compare-action-{suffix}\"")),
+            "missing action form for {suffix}"
+        );
+        assert!(
+            html.contains(&format!("data-table=\"{suffix}\"")),
+            "missing data-table marker for {suffix}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn compare_table_transfer_copies_or_moves_filtered_files() {
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("src");
+    let dest = root.path().join("picked");
+    std::fs::create_dir_all(&src).unwrap();
+    let one = src.join("a.jpg");
+    let two = src.join("b.jpg");
+    std::fs::write(&one, b"one").unwrap();
+    std::fs::write(&two, b"two").unwrap();
+
+    // Copy two filtered files into a typed destination folder.
+    let files = format!("{}\n{}", one.display(), two.display());
+    let res = app()
+        .oneshot(form_request(
+            "/compare/transfer",
+            format!(
+                "files={}&destination={}&op=copy",
+                urlencode(&files),
+                urlencode(&dest.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("Copy Complete"), "{html}");
+    assert_eq!(std::fs::read(dest.join("a.jpg")).unwrap(), b"one");
+    assert_eq!(std::fs::read(dest.join("b.jpg")).unwrap(), b"two");
+    assert!(one.exists() && two.exists());
+
+    // Move one of them.
+    let res = app()
+        .oneshot(form_request(
+            "/compare/transfer",
+            format!(
+                "files={}&destination={}&op=move",
+                urlencode(&one.display().to_string()),
+                urlencode(&dest.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("Move Complete"), "{html}");
+    assert!(!one.exists(), "move removes the source");
+    assert!(dest.join("a (1).jpg").exists(), "collision renamed");
+
+    // Validation.
+    let res = app()
+        .oneshot(form_request(
+            "/compare/transfer",
+            "files=&destination=/tmp&op=copy".into(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let res = app()
+        .oneshot(form_request(
+            "/compare/transfer",
+            format!("files={}&destination=&op=copy", urlencode(&two.display().to_string())),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn similar_tables_have_filters_and_embedded_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let tree = root.path().join("library");
+    std::fs::create_dir_all(&tree).unwrap();
+    let original = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+    std::fs::copy(&original, tree.join("original.jpg")).unwrap();
+    let img = image::open(&original).unwrap();
+    let rgb = img.to_rgb8();
+    image::imageops::resize(&rgb, 600, 800, image::imageops::FilterType::Lanczos3)
+        .save_with_format(tree.join("small.jpg"), image::ImageFormat::Jpeg)
+        .unwrap();
+
+    // Self mode.
+    let res = app()
+        .oneshot(form_request(
+            "/similar/run",
+            format!("root={}", urlencode(&tree.display().to_string())),
+        ))
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("id=\"similar-rows-data\""), "{html}");
+    assert!(html.contains("id=\"similar-filter-rows\""), "{html}");
+    assert!(html.contains("id=\"similar-more-rows\""), "{html}");
+    assert!(html.contains("id=\"similar-count-rows\""), "{html}");
+    assert!(html.contains("original.jpg") && html.contains("small.jpg"), "{html}");
+
+    // Compare mode: an exact copy (duplicate) plus a downscale (similar).
+    let b_root = root.path().join("candidate");
+    std::fs::create_dir_all(&b_root).unwrap();
+    std::fs::copy(&original, b_root.join("original.jpg")).unwrap();
+    // A different scale than A's own downscale, so it stays a *similar*
+    // match rather than an exact duplicate.
+    let rgb2 = image::open(&original).unwrap().to_rgb8();
+    image::imageops::resize(&rgb2, 480, 640, image::imageops::FilterType::Lanczos3)
+        .save_with_format(b_root.join("small.jpg"), image::ImageFormat::Jpeg)
+        .unwrap();
+    let res = app()
+        .oneshot(form_request(
+            "/similar/run",
+            format!(
+                "root={}&compare={}",
+                urlencode(&tree.display().to_string()),
+                urlencode(&b_root.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("id=\"similar-matches-data\""), "{html}");
+    assert!(html.contains("id=\"similar-filter-matches\""), "{html}");
+    assert!(html.contains("id=\"similar-more-matches\""), "{html}");
+    assert!(html.contains("id=\"similar-count-matches\""), "{html}");
+}
+
+#[tokio::test]
+async fn similar_compare_eliminates_exact_duplicates_first() {
+    let root = tempfile::tempdir().unwrap();
+    let a_root = root.path().join("library");
+    let b_root = root.path().join("candidate");
+    std::fs::create_dir_all(&a_root).unwrap();
+    std::fs::create_dir_all(&b_root).unwrap();
+
+    let original = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+    // A has the original; B has an exact copy plus a downscaled version.
+    std::fs::copy(&original, a_root.join("photo.jpg")).unwrap();
+    std::fs::copy(&original, b_root.join("exact.jpg")).unwrap();
+    let img = image::open(&original).unwrap();
+    let rgb = img.to_rgb8();
+    image::imageops::resize(&rgb, 600, 800, image::imageops::FilterType::Lanczos3)
+        .save_with_format(b_root.join("small.jpg"), image::ImageFormat::Jpeg)
+        .unwrap();
+
+    let res = app()
+        .oneshot(form_request(
+            "/similar/run",
+            format!(
+                "root={}&compare={}",
+                urlencode(&a_root.display().to_string()),
+                urlencode(&b_root.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+
+    // The exact copy is reported as a duplicate, not as a similar match.
+    assert!(html.contains("Exact duplicates"), "{html}");
+    assert!(html.contains("id=\"similar-dups-data\""), "{html}");
+    assert!(html.contains("id=\"purgatory-form-dups\""), "{html}");
+    assert!(html.contains("Move 1 exact B copies to purgatory"), "{html}");
+    let marker = "id=\"similar-dups-data\" type=\"application/json\">";
+    let start = html.find(marker).unwrap() + marker.len();
+    let end = start + html[start..].find("</script>").unwrap();
+    let payload = &html[start..end];
+    assert!(payload.contains("exact.jpg"), "duplicate payload: {payload}");
+    assert!(
+        !payload.contains("small.jpg"),
+        "the downscale is not an exact duplicate: {payload}"
+    );
+}
+
+#[tokio::test]
+async fn overlapping_two_tree_operations_are_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    let outer = root.path().join("outer");
+    let inner = outer.join("inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    let sibling = root.path().join("sibling");
+    std::fs::create_dir_all(&sibling).unwrap();
+
+    // Compare: nested in either direction and equal trees are rejected.
+    for (a, b) in [
+        (outer.clone(), inner.clone()),
+        (inner.clone(), outer.clone()),
+        (outer.clone(), outer.clone()),
+    ] {
+        let res = app()
+            .oneshot(form_request(
+                "/compare/run",
+                format!(
+                    "a={}&b={}",
+                    urlencode(&a.display().to_string()),
+                    urlencode(&b.display().to_string())
+                ),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{a:?} vs {b:?}");
+        let body = body_string(res.into_body()).await;
+        assert!(body.contains("overlap") || body.contains("same"), "{body}");
+    }
+
+    // Disjoint trees still work.
+    let res = app()
+        .oneshot(form_request(
+            "/compare/run",
+            format!(
+                "a={}&b={}",
+                urlencode(&outer.display().to_string()),
+                urlencode(&sibling.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    // Sets: A and any candidate (or candidates among each other) must be
+    // disjoint.
+    let res = app()
+        .oneshot(form_request(
+            "/sets/run",
+            format!(
+                "a={}&candidates={}",
+                urlencode(&outer.display().to_string()),
+                urlencode(&inner.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // Similar compare mode.
+    let res = app()
+        .oneshot(form_request(
+            "/similar/run",
+            format!(
+                "root={}&compare={}",
+                urlencode(&outer.display().to_string()),
+                urlencode(&inner.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // Swap.
+    let res = app()
+        .oneshot(form_request(
+            "/similar/swap",
+            format!(
+                "swaps={}&a_root={}&b_root={}&purgatory={}",
+                urlencode("/x\t/y"),
+                urlencode(&outer.display().to_string()),
+                urlencode(&inner.display().to_string()),
+                urlencode(&sibling.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // Organize: destination inside the source is rejected (loop hazard);
+    // source inside the destination is legitimate.
+    let res = app()
+        .oneshot(form_request(
+            "/organize/scan",
+            format!(
+                "source={}&destination={}&format=YYYY/MM-DD",
+                urlencode(&outer.display().to_string()),
+                urlencode(&inner.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    let res = app()
+        .oneshot(form_request(
+            "/organize/scan",
+            format!(
+                "source={}&destination={}&format=YYYY/MM-DD",
+                urlencode(&inner.display().to_string()),
+                urlencode(&outer.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}

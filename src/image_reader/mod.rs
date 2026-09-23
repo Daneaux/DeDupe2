@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 pub use bytes::read_bytes;
-pub use phash::{distance, distance_of, lossy_kind, phash, phash_of, Phash, SIMILAR_MAX_DISTANCE};
+pub use phash::{
+    distance, distance_of, lossy_kind, mean_chroma, phash, phash_of, Phash,
+    SIMILAR_MAX_DISTANCE,
+};
 pub use hash::{
     hash_all_bytes, hash_first_n_bytes, hash_image_data, hash_image_data_all,
     hash_image_data_n, hash_image_data_status,

@@ -571,3 +571,164 @@ fn settings_round_trip_and_tolerate_corruption() {
     std::fs::write(&path, b"not json").unwrap();
     assert_eq!(Settings::load_from(&path).cache_path, None);
 }
+
+/// Environment-specific: verifies every mounted volume reports a persistent
+/// UUID (vol:<uuid> keys), that distinct volumes get distinct keys/branches,
+/// and that the same volume exposed at two mount points (macOS firmlinks:
+/// "/" and "/Volumes/Macintosh HD") shares one key. Run with
+/// `cargo test --test cache real_volumes -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn real_volumes_have_uuids_and_unique_cache_branches() {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    // Enumerate mounted volumes: "/" plus every /Volumes entry.
+    let mut mounts: Vec<PathBuf> = vec![PathBuf::from("/")];
+    if let Ok(entries) = std::fs::read_dir("/Volumes") {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                mounts.push(path);
+            }
+        }
+    }
+
+    let mut cache = ScanCache::new();
+
+    // 1. Every mount resolves to a persistent UUID key.
+    let mut by_key: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    for mount in &mounts {
+        let key = cache
+            .volume_key(mount)
+            .unwrap_or_else(|| panic!("{} did not resolve to a volume", mount.display()));
+        println!("volume {:40} -> {key}", mount.display());
+        assert!(
+            key.starts_with("vol:"),
+            "{} has no Volume UUID (key: {key})",
+            mount.display()
+        );
+        by_key.entry(key).or_default().push(mount.clone());
+    }
+    println!("{} mount(s), {} distinct volume(s)", mounts.len(), by_key.len());
+
+    // Multiple mount points of the SAME volume share a key (and therefore a
+    // single cache branch); distinct volumes must not collide.
+    let distinct = by_key.len();
+    assert!(distinct >= 2, "expected at least two distinct volumes, got {distinct}");
+
+    // 2. Cache something on every distinct volume. Writable volumes get a
+    // probe with the SAME relative path (so a branch collision would be
+    // visible); unwritable ones fall back to the first existing supported
+    // file found by a bounded walk.
+    fn first_supported_file(root: &std::path::Path) -> Option<PathBuf> {
+        let mut stack = vec![root.to_path_buf()];
+        let mut seen = 0usize;
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                seen += 1;
+                if seen > 20_000 {
+                    return None;
+                }
+                let path = entry.path();
+                let Ok(kind) = entry.file_type() else { continue };
+                if kind.is_dir() {
+                    stack.push(path);
+                } else if kind.is_file() && dedupe2::image_reader::is_supported_image(&path) {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
+    let boot_key = cache.volume_key(std::path::Path::new("/")).unwrap_or_default();
+
+    let mut probes: Vec<(String, PathBuf, u64)> = Vec::new(); // same rel path
+    let mut others: Vec<(String, PathBuf, u64)> = Vec::new(); // any existing file
+    let mut probe_dirs: Vec<PathBuf> = Vec::new();
+    for (key, mount_list) in &by_key {
+        // Prefer the real /Volumes mount as the walking root ("/" also
+        // contains the other volumes under /Volumes).
+        let mount = mount_list
+            .iter()
+            .find(|m| m.starts_with("/Volumes"))
+            .unwrap_or(&mount_list[0]);
+
+        let probe_dir = mount.join(format!(".dedupe2-probe-{}", std::process::id()));
+        match std::fs::create_dir(&probe_dir) {
+            Ok(()) => {
+                let probe_file = probe_dir.join("probe.bin");
+                std::fs::write(&probe_file, format!("probe-for-{key}").as_bytes()).unwrap();
+                let (hash, _) = cache.shallow_hash(&probe_file, 64 * 1024);
+                probes.push((key.clone(), probe_file, hash));
+                probe_dirs.push(probe_dir);
+            }
+            Err(e) => {
+                if *key == boot_key || !mount.starts_with("/Volumes") {
+                    println!("skipping {} ({e})", mount.display());
+                    continue;
+                }
+                println!("{} is not writable ({e}) — using an existing file", mount.display());
+                if let Some(existing) = first_supported_file(mount) {
+                    let (hash, decoded) = cache.shallow_hash(&existing, 64 * 1024);
+                    println!("  cached {} (hash {hash:016x}, decoded={decoded})", existing.display());
+                    others.push((key.clone(), existing, hash));
+                } else {
+                    println!("  no supported file found on {}", mount.display());
+                }
+            }
+        }
+    }
+
+    let cached_volumes = probes.len() + others.len();
+    assert!(
+        cached_volumes >= 2,
+        "need at least two volumes with cache entries (got {cached_volumes})"
+    );
+
+    // Every cached file must be served from its own volume's branch.
+    for (key, path, expected) in probes.iter().chain(others.iter()) {
+        assert_eq!(
+            cache.shallow_hash(path, 64 * 1024).0,
+            *expected,
+            "{key}: lookup returned a different volume's data ({})",
+            path.display()
+        );
+        assert_eq!(cache.branch_coverage(path).files, 1, "{key}: coverage");
+    }
+
+    // Same relative path on different volumes: hashes stay distinct.
+    if probes.len() >= 2 {
+        let rel_paths: Vec<String> = probes
+            .iter()
+            .map(|(_, path, _)| {
+                path.components()
+                    .rev()
+                    .take(2)
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .collect();
+        assert!(
+            rel_paths.windows(2).all(|w| w[0] == w[1]),
+            "probes should share their relative path: {rel_paths:?}"
+        );
+        let mut hashes: Vec<u64> = probes.iter().map(|(_, _, hash)| *hash).collect();
+        hashes.sort();
+        hashes.dedup();
+        assert_eq!(hashes.len(), probes.len(), "probe contents are distinct");
+    }
+
+    println!(
+        "verified {cached_volumes} distinct volume branches ({} probes, {} existing files)",
+        probes.len(),
+        others.len()
+    );
+
+    for dir in probe_dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

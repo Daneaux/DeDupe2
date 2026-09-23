@@ -753,3 +753,32 @@ body {
 .cache-hint .cache-off {
   color: var(--danger);
 }
+
+.table-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.4rem 0 0.6rem;
+}
+
+.table-tools .table-filter {
+  flex: 0 0 22rem;
+  max-width: 100%;
+}
+
+.table-more {
+  margin-top: 0.5rem;
+}
+
+.table-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.5rem 0 0.2rem;
+}
+
+.table-action .hint {
+  flex-basis: 100%;
+  margin: 0;
+}

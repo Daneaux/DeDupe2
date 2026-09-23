@@ -1503,3 +1503,235 @@ pub fn organize_into_destination_with_progress(
 
     outcome
 }
+
+#[derive(Debug)]
+pub struct SwapOutcome {
+    pub planned: usize,
+    pub swapped: usize,
+    pub purged: usize,
+    /// Pairs that failed, with the reason. Both sides are left in place for
+    /// any pair where a step failed.
+    pub failures: Vec<(PathBuf, String)>,
+}
+
+/// Swap better B copies into A. Two-phase and byte-verified throughout:
+///
+///   1. move the worse A copy to purgatory (copy -> verify -> remove),
+///   2. move the better B copy into the A path it vacated (copy -> verify ->
+///      remove).
+///
+/// If phase 1 fails, the pair is skipped and nothing moved. If phase 2 fails
+/// the A copy is safe in purgatory and the B copy is untouched, so nothing is
+/// ever lost. Empty folders are pruned afterwards; collisions auto-rename.
+pub fn swap_better_copies_with_progress(
+    swaps: &[(PathBuf, PathBuf)],
+    a_root: &Path,
+    b_root: &Path,
+    purgatory_root: &Path,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> SwapOutcome {
+    use crate::image_reader::hash_all_bytes;
+
+    let mut outcome = SwapOutcome {
+        planned: swaps.len(),
+        swapped: 0,
+        purged: 0,
+        failures: Vec::new(),
+    };
+    let total = swaps.len() * 2;
+    let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+
+    // Verified single-file move: copy to `dir` (unique name), byte-check, and
+    // only then remove the source. Returns the final destination path.
+    fn safe_move(
+        src: &Path,
+        dir: &Path,
+        taken: &mut HashMap<PathBuf, HashSet<String>>,
+        hash_all_bytes: fn(&Path) -> Result<u64, crate::image_reader::ImageReaderError>,
+    ) -> Result<PathBuf, String> {
+        let meta = std::fs::metadata(src).map_err(|e| format!("source not readable: {e}"))?;
+        let source_hash = hash_all_bytes(src).map_err(|e| format!("source hash failed: {e}"))?;
+
+        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create folder: {e}"))?;
+        let names = taken
+            .entry(dir.to_path_buf())
+            .or_insert_with(|| existing_names(dir));
+        let unique = unique_name(&file_name(src), names);
+        names.insert(unique.to_lowercase());
+        let target = dir.join(unique);
+
+        if let Err(e) = std::fs::copy(src, &target) {
+            let _ = std::fs::remove_file(&target);
+            return Err(format!("copy failed: {e}"));
+        }
+        let dst_size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+        let verified = dst_size == meta.len()
+            && hash_all_bytes(&target).map(|h| h == source_hash).unwrap_or(false);
+        if !verified {
+            let _ = std::fs::remove_file(&target);
+            return Err("verification failed: destination bytes differ".into());
+        }
+        if let Err(e) = std::fs::remove_file(src) {
+            return Err(format!(
+                "copied and verified, but source removal failed (both copies exist): {e}"
+            ));
+        }
+        Ok(target)
+    }
+
+    // Phase 1: purge the worse A copies to purgatory (B = the A-tree root for
+    // relative structure).
+    let mut purge_ok: Vec<bool> = vec![false; swaps.len()];
+    for (i, (a_worse, _)) in swaps.iter().enumerate() {
+        progress(i + 1, total);
+        let dir = a_worse
+            .strip_prefix(a_root)
+            .ok()
+            .and_then(|rel| purgatory_root.join(rel).parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| purgatory_root.to_path_buf());
+        match safe_move(a_worse, &dir, &mut taken, hash_all_bytes) {
+            Ok(_) => {
+                purge_ok[i] = true;
+                outcome.purged += 1;
+            }
+            Err(e) => outcome.failures.push((a_worse.clone(), e)),
+        }
+    }
+
+    // Phase 2: move the better B copies into the vacated A paths.
+    for (i, (a_worse, b_better)) in swaps.iter().enumerate() {
+        progress(swaps.len() + i + 1, total);
+        if !purge_ok[i] {
+            continue;
+        }
+        let Some(dir) = a_worse.parent().map(|p| p.to_path_buf()) else {
+            outcome
+                .failures
+                .push((b_better.clone(), "A path has no parent directory".into()));
+            continue;
+        };
+        match safe_move(b_better, &dir, &mut taken, hash_all_bytes) {
+            Ok(_) => outcome.swapped += 1,
+            Err(e) => outcome.failures.push((
+                b_better.clone(),
+                format!("{e} (the worse A copy is safe in purgatory)"),
+            )),
+        }
+    }
+
+    // Empty folders left behind are pruned (roots themselves are kept).
+    for root in [a_root, b_root] {
+        prune_empty_children(root);
+    }
+
+    outcome
+}
+
+#[derive(Debug)]
+pub struct TransferOutcome {
+    pub planned: usize,
+    pub transferred: usize,
+    pub renamed_on_collision: usize,
+    /// Files that could not be transferred safely, with the reason. The
+    /// source is always left intact for these.
+    pub failures: Vec<(PathBuf, String)>,
+}
+
+/// Copy or move a set of files into a single destination folder (flat, no
+/// structure preserved). Copy is verified byte-for-byte before reporting
+/// success; Move is copy -> verify -> remove, so a failure never loses a
+/// file. Collisions auto-rename, never overwrite.
+pub fn transfer_files_with_progress(
+    files: &[PathBuf],
+    destination: &Path,
+    op: Operation,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> TransferOutcome {
+    use crate::image_reader::hash_all_bytes;
+
+    let mut outcome = TransferOutcome {
+        planned: files.len(),
+        transferred: 0,
+        renamed_on_collision: 0,
+        failures: Vec::new(),
+    };
+    let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+    let total = files.len();
+
+    for (i, path) in files.iter().enumerate() {
+        progress(i + 1, total);
+
+        let meta = match std::fs::metadata(path) {
+            Ok(meta) => meta,
+            Err(e) => {
+                outcome
+                    .failures
+                    .push((path.clone(), format!("source not readable: {e}")));
+                continue;
+            }
+        };
+        let source_hash = match hash_all_bytes(path) {
+            Ok(hash) => hash,
+            Err(e) => {
+                outcome
+                    .failures
+                    .push((path.clone(), format!("source hash failed: {e}")));
+                continue;
+            }
+        };
+
+        if let Err(e) = std::fs::create_dir_all(destination) {
+            outcome
+                .failures
+                .push((path.clone(), format!("cannot create destination folder: {e}")));
+            continue;
+        }
+        let names = taken
+            .entry(destination.to_path_buf())
+            .or_insert_with(|| existing_names(destination));
+        let unique = unique_name(&file_name(path), names);
+        names.insert(unique.to_lowercase());
+        let target = destination.join(&unique);
+
+        if let Err(e) = std::fs::copy(path, &target) {
+            let _ = std::fs::remove_file(&target);
+            outcome
+                .failures
+                .push((path.clone(), format!("copy failed: {e}")));
+            continue;
+        }
+
+        // Verify the copy before reporting success (and before removing the
+        // source for a move).
+        let dst_size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+        let verified = dst_size == meta.len()
+            && hash_all_bytes(&target).map(|h| h == source_hash).unwrap_or(false);
+        if !verified {
+            let _ = std::fs::remove_file(&target);
+            outcome.failures.push((
+                path.clone(),
+                "verification failed: destination bytes differ".into(),
+            ));
+            continue;
+        }
+
+        if op == Operation::Move {
+            if let Err(e) = std::fs::remove_file(path) {
+                outcome.failures.push((
+                    target.clone(),
+                    format!(
+                        "copied and verified, but source removal failed (both copies exist): {e}"
+                    ),
+                ));
+                continue;
+            }
+        }
+
+        outcome.transferred += 1;
+        if unique != file_name(path) {
+            outcome.renamed_on_collision += 1;
+        }
+    }
+
+    outcome
+}

@@ -12,22 +12,27 @@
       <span class="badge badge-ok">{{ a_only_count }}</span>
       <span class="collection-sub">photos only in A</span>
     </div>
+    <div class="table-tools">
+      <input type="text" class="table-filter" id="compare-filter-a" placeholder="filter this table…" />
+      <span class="hint" id="compare-count-a"></span>
+    </div>
     <div class="table-scroll">
       <table class="compare-table">
         <thead><tr><th>Path</th></tr></thead>
-        <tbody>
-          {% for r in a_rows %}
-          <tr class="row-a"><td class="path clickable" data-reveal="{{ r.path }}">{{ r.path }}</td></tr>
-          {% endfor %}
-          {% if a_more > 0 %}
-          <tr class="more-row"><td class="muted">… {{ a_more }} more not shown</td></tr>
-          {% endif %}
-          {% if a_rows.len() == 0 %}
-          <tr><td class="muted">None.</td></tr>
-          {% endif %}
-        </tbody>
+        <tbody id="compare-table-a"></tbody>
       </table>
     </div>
+    <form method="post" action="/compare/transfer" id="compare-action-a" class="merge-form table-action" data-table="a">
+      <input type="hidden" name="files" value="" />
+      <select name="op">
+        <option value="copy" selected>Copy</option>
+        <option value="move">Move</option>
+      </select>
+      <input type="text" name="destination" placeholder="/destination folder" />
+      <button type="submit" class="btn btn-small btn-secondary">Copy / move filtered rows</button>
+      <span class="hint">acts on every row matching this table&rsquo;s filter above</span>
+    </form>
+    <button type="button" class="btn btn-small btn-secondary table-more" id="compare-more-a" hidden>more…</button>
   </article>
 
   <article class="collection">
@@ -55,25 +60,27 @@
         <button type="submit" class="btn btn-small btn-secondary" {% if dup_total == 0 %}disabled{% endif %}>Move duplicates to purgatory</button>
       </div>
     </form>
+    <div class="table-tools">
+      <input type="text" class="table-filter" id="compare-filter-dups" placeholder="filter this table…" />
+      <span class="hint" id="compare-count-dups"></span>
+    </div>
     <div class="table-scroll">
       <table class="compare-table">
         <thead><tr><th>Tree</th><th>Path</th></tr></thead>
-        <tbody>
-          {% for r in dup_rows %}
-          <tr class="{{ r.row_class }}">
-            <td><span class="badge badge-{{ r.badge }}">{{ r.tree }}</span></td>
-            <td class="path clickable" data-reveal="{{ r.path }}">{{ r.path }}</td>
-          </tr>
-          {% endfor %}
-          {% if dup_more > 0 %}
-          <tr class="more-row"><td colspan="3" class="muted">… {{ dup_more }} more not shown</td></tr>
-          {% endif %}
-          {% if dup_rows.len() == 0 %}
-          <tr><td colspan="3" class="muted">None.</td></tr>
-          {% endif %}
-        </tbody>
+        <tbody id="compare-table-dups"></tbody>
       </table>
     </div>
+    <form method="post" action="/compare/transfer" id="compare-action-dups" class="merge-form table-action" data-table="dups">
+      <input type="hidden" name="files" value="" />
+      <select name="op">
+        <option value="copy" selected>Copy</option>
+        <option value="move">Move</option>
+      </select>
+      <input type="text" name="destination" placeholder="/destination folder" />
+      <button type="submit" class="btn btn-small btn-secondary">Copy / move filtered rows</button>
+      <span class="hint">acts on every row matching this table&rsquo;s filter above</span>
+    </form>
+    <button type="button" class="btn btn-small btn-secondary table-more" id="compare-more-dups" hidden>more…</button>
   </article>
 
   <article class="collection">
@@ -99,22 +106,27 @@
         </div>
       </form>
     </div>
+    <div class="table-tools">
+      <input type="text" class="table-filter" id="compare-filter-b" placeholder="filter this table…" />
+      <span class="hint" id="compare-count-b"></span>
+    </div>
     <div class="table-scroll">
       <table class="compare-table">
         <thead><tr><th>Path</th></tr></thead>
-        <tbody>
-          {% for r in b_rows %}
-          <tr class="row-b"><td class="path clickable" data-reveal="{{ r.path }}">{{ r.path }}</td></tr>
-          {% endfor %}
-          {% if b_more > 0 %}
-          <tr class="more-row"><td class="muted">… {{ b_more }} more not shown</td></tr>
-          {% endif %}
-          {% if b_rows.len() == 0 %}
-          <tr><td class="muted">None.</td></tr>
-          {% endif %}
-        </tbody>
+        <tbody id="compare-table-b"></tbody>
       </table>
     </div>
+    <form method="post" action="/compare/transfer" id="compare-action-b" class="merge-form table-action" data-table="b">
+      <input type="hidden" name="files" value="" />
+      <select name="op">
+        <option value="copy" selected>Copy</option>
+        <option value="move">Move</option>
+      </select>
+      <input type="text" name="destination" placeholder="/destination folder" />
+      <button type="submit" class="btn btn-small btn-secondary">Copy / move filtered rows</button>
+      <span class="hint">acts on every row matching this table&rsquo;s filter above</span>
+    </form>
+    <button type="button" class="btn btn-small btn-secondary table-more" id="compare-more-b" hidden>more…</button>
   </article>
   <article class="collection">
     <div class="collection-head">
@@ -122,22 +134,32 @@
       <span class="badge badge-dirty">{{ unreadable_count }}</span>
       <span class="collection-sub">could not be decoded</span>
     </div>
+    <div class="table-tools">
+      <input type="text" class="table-filter" id="compare-filter-unreadable" placeholder="filter this table…" />
+      <span class="hint" id="compare-count-unreadable"></span>
+    </div>
     <div class="table-scroll">
       <table class="compare-table">
         <thead><tr><th>Path</th></tr></thead>
-        <tbody>
-          {% for r in unreadable_rows %}
-          <tr class="row-b"><td class="path clickable" data-reveal="{{ r.path }}">{{ r.path }}</td></tr>
-          {% endfor %}
-          {% if unreadable_more > 0 %}
-          <tr class="more-row"><td class="muted">… {{ unreadable_more }} more not shown</td></tr>
-          {% endif %}
-          {% if unreadable_rows.len() == 0 %}
-          <tr><td class="muted">None.</td></tr>
-          {% endif %}
-        </tbody>
+        <tbody id="compare-table-unreadable"></tbody>
       </table>
     </div>
+    <form method="post" action="/compare/transfer" id="compare-action-unreadable" class="merge-form table-action" data-table="unreadable">
+      <input type="hidden" name="files" value="" />
+      <select name="op">
+        <option value="copy" selected>Copy</option>
+        <option value="move">Move</option>
+      </select>
+      <input type="text" name="destination" placeholder="/destination folder" />
+      <button type="submit" class="btn btn-small btn-secondary">Copy / move filtered rows</button>
+      <span class="hint">acts on every row matching this table&rsquo;s filter above</span>
+    </form>
+    <button type="button" class="btn btn-small btn-secondary table-more" id="compare-more-unreadable" hidden>more…</button>
   </article>
 
 </section>
+
+<script id="compare-a-data" type="application/json">{{ a_json|safe }}</script>
+<script id="compare-b-data" type="application/json">{{ b_json|safe }}</script>
+<script id="compare-dup-data" type="application/json">{{ dup_json|safe }}</script>
+<script id="compare-unreadable-data" type="application/json">{{ unreadable_json|safe }}</script>

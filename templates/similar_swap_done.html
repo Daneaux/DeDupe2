@@ -1,0 +1,50 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>Swap Complete</h2>
+      <span class="subtitle">{{ a_root }} &harr; {{ b_root }} · worse A copies &rarr; {{ purgatory }}, better B copies &rarr; A. Copy &rarr; byte-verify &rarr; remove throughout.</span>
+    </div>
+  </div>
+
+  <div class="merge-summary">
+    <div class="summary-stat">
+      <span class="summary-value">{{ swapped }}</span>
+      <span class="summary-label">swapped of {{ planned }}</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ purged }}</span>
+      <span class="summary-label">A copies moved to purgatory</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ failure_count }}</span>
+      <span class="summary-label">failures (both copies kept)</span>
+    </div>
+  </div>
+
+  {% if failure_count > 0 %}
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Failures</span>
+      <span class="badge badge-dirty">{{ failure_count }}</span>
+      <span class="collection-sub">nothing was lost — both copies remain in place</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Path</th><th>Reason</th></tr></thead>
+        <tbody>
+          {% for f in failures %}
+          <tr class="row-b">
+            <td class="path clickable" data-reveal="{{ f.0 }}">{{ f.0 }}</td>
+            <td class="muted">{{ f.1 }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+  {% endif %}
+
+  <div class="toolbar-actions">
+    <a class="btn btn-secondary" href="/similar">Back to similar</a>
+  </div>
+</section>

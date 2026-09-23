@@ -29,7 +29,8 @@ use crate::Scanner::similar::{
 };
 use crate::filemover::{
     destination_for, move_to_purgatory_with_progress, organize_into_destination_with_progress,
-    plan_rehome, rehome_verified, transfer_dated_with_progress, CopyOutcome, RehomeOutcome,
+    plan_rehome, rehome_verified, swap_better_copies_with_progress,
+    transfer_dated_with_progress, transfer_files_with_progress, CopyOutcome, RehomeOutcome,
 };
 use std::process::Command;
 
@@ -80,19 +81,16 @@ struct CompareResultTemplate {
     b: String,
     cache_reused: usize,
     cache_computed: usize,
-    a_rows: Vec<PathRowView>,
-    a_more: usize,
-    dup_rows: Vec<DupRowView>,
-    dup_more: usize,
-    b_rows: Vec<PathRowView>,
-    b_more: usize,
+    /// Full result sets for the client-side filter (JSON, rendered |safe).
+    a_json: String,
+    b_json: String,
+    dup_json: String,
+    unreadable_json: String,
     a_only_count: usize,
     b_only_count: usize,
     dup_total: usize,
     dup_pairs_all: String,
     dup_b_files_all: String,
-    unreadable_rows: Vec<PathRowView>,
-    unreadable_more: usize,
     unreadable_count: usize,
     /// Unreadable files sitting in a date-named folder: still placeable, so
     /// they are folded into the originals list (dated by folder proxy).
@@ -260,22 +258,19 @@ struct SimilarCompareTemplate {
     lossy_b: usize,
     match_count: usize,
     removable_count: usize,
-    rows: Vec<SimilarMatchRowView>,
-    rows_more: usize,
+    swap_count: usize,
+    duplicate_count: usize,
+    /// Full match rows for the client-side filter (JSON, rendered |safe).
+    rows_json: String,
+    /// Full exact-duplicate rows for the client-side filter.
+    duplicates_json: String,
+    duplicates_input: String,
     candidates_input: String,
+    /// `a_path<TAB>b_path` lines for the swap form (B is the bigger file).
+    swaps_input: String,
 }
 
-struct SimilarMatchRowView {
-    pub a: String,
-    pub b: String,
-    pub distance: u32,
-    pub verdict: &'static str,
-    pub removable: bool,
-    pub a_pixels: u64,
-    pub b_pixels: u64,
-    pub a_bytes: u64,
-    pub b_bytes: u64,
-}
+
 
 #[derive(Template)]
 #[template(path = "similar_result.html")]
@@ -288,20 +283,57 @@ struct SimilarResultTemplate {
     group_count: usize,
     candidate_count: usize,
     removable_count: usize,
-    rows: Vec<SimilarRowView>,
-    rows_more: usize,
+    duplicate_count: usize,
+    /// Full group rows for the client-side filter (JSON, rendered |safe).
+    rows_json: String,
+    /// Full exact-duplicate rows for the client-side filter.
+    duplicates_json: String,
     /// Removable candidates, one per line — the purgatory move form.
     candidates_input: String,
+    /// Exact-duplicate extras, one per line — their purgatory move form.
+    duplicates_input: String,
 }
 
-struct SimilarRowView {
-    pub keeper: String,
-    pub candidate: String,
-    pub distance: u32,
-    pub keeper_pixels: u64,
-    pub candidate_pixels: u64,
-    pub keeper_bytes: u64,
-    pub candidate_bytes: u64,
+#[derive(serde::Deserialize)]
+struct SwapForm {
+    /// One `a_path<TAB>b_path` pair per line (A's worse copy, B's better copy).
+    swaps: String,
+    a_root: String,
+    b_root: String,
+    purgatory: String,
+}
+
+#[derive(Template)]
+#[template(path = "similar_swap_done.html")]
+struct SimilarSwapTemplate {
+    a_root: String,
+    b_root: String,
+    purgatory: String,
+    planned: usize,
+    swapped: usize,
+    purged: usize,
+    failure_count: usize,
+    failures: Vec<(String, String)>,
+}
+
+#[derive(serde::Deserialize)]
+struct TableTransferForm {
+    files: String,
+    destination: String,
+    op: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "transfer_result.html")]
+struct TransferResultTemplate {
+    destination: String,
+    operation: &'static str,
+    verb: &'static str,
+    planned: usize,
+    transferred: usize,
+    renamed_on_collision: usize,
+    failure_count: usize,
+    failures: Vec<(String, String)>,
 }
 
 #[derive(serde::Deserialize)]
@@ -423,6 +455,65 @@ struct CopyForm {
     dates: Option<String>,
 }
 
+/// Resolve a path for comparison: canonicalize the deepest existing
+/// ancestor (resolving symlinks, e.g. a symlinked `4tbext`) and keep the
+/// non-existent tail attached, so a not-yet-created destination can still be
+/// compared against an existing source.
+fn resolved_path(path: &Path) -> PathBuf {
+    let mut current = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    while !current.exists() {
+        match current.file_name() {
+            Some(name) => tail.push(name.to_os_string()),
+            None => break,
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    let mut resolved = std::fs::canonicalize(&current).unwrap_or(current);
+    for name in tail.into_iter().rev() {
+        resolved.push(name);
+    }
+    resolved
+}
+
+/// Whether one tree contains the other (equal counts as contained).
+fn trees_nested(a: &Path, b: &Path) -> Option<(&'static str, PathBuf, PathBuf)> {
+    let (ra, rb) = (resolved_path(a), resolved_path(b));
+    if ra == rb {
+        return Some(("", ra, rb));
+    }
+    if ra.starts_with(&rb) {
+        return Some(("A is inside B", ra, rb));
+    }
+    if rb.starts_with(&ra) {
+        return Some(("B is inside A", ra, rb));
+    }
+    None
+}
+
+/// Two-tree operations compare trees against each other, so nesting them
+/// makes the intersection compare against itself (self-pairs, empty
+/// originals). Reject before any scanning.
+fn require_disjoint_trees(a: &Path, b: &Path) -> Result<(), (StatusCode, String)> {
+    match trees_nested(a, b) {
+        None => Ok(()),
+        Some(("", _, _)) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("the two trees are the same: {}", a.display()),
+        )),
+        Some((which, ra, rb)) => Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "the trees overlap ({which}) — pick disjoint trees: {} vs {}",
+                ra.display(),
+                rb.display()
+            ),
+        )),
+    }
+}
+
 /// Input trees must exist before a scan starts — otherwise the failure
 /// surfaces only after the (long) scan of the other tree (or worse, silently
 /// scans nothing thanks to the resilient collector).
@@ -494,8 +585,6 @@ struct PathRowView {
 
 struct DupRowView {
     pub tree: String,
-    pub badge: String,
-    pub row_class: String,
     pub path: String,
 }
 
@@ -663,6 +752,7 @@ async fn compare_run(
     let b = PathBuf::from(&b_str);
     require_dir(&a)?;
     require_dir(&b)?;
+    require_disjoint_trees(&a, &b)?;
 
     let (tx, rx) = mpsc::unbounded_channel::<Msg>();
     let progress_tx = tx.clone();
@@ -1338,6 +1428,7 @@ async fn similar_run(
     require_dir(Path::new(&root_str))?;
     if let Some(other) = compare_root.as_deref() {
         require_dir(Path::new(other))?;
+        require_disjoint_trees(Path::new(&root_str), Path::new(other))?;
     }
 
     let (tx, rx) = mpsc::unbounded_channel::<Msg>();
@@ -1404,26 +1495,41 @@ fn render_similar_compare(
     cache_reused: usize,
     cache_computed: usize,
 ) -> String {
-    let rows: Vec<SimilarMatchRowView> = outcome
+    let swap_count = outcome
         .matches
         .iter()
-        .map(|m| SimilarMatchRowView {
-            a: to_string(&m.a),
-            b: to_string(&m.b),
-            distance: m.distance,
-            verdict: if m.removable {
-                "B is the smaller file — removable"
-            } else {
-                "B is the bigger file — keep"
-            },
-            removable: m.removable,
-            a_pixels: m.a_pixels,
-            b_pixels: m.b_pixels,
-            a_bytes: m.a_bytes,
-            b_bytes: m.b_bytes,
+        .filter(|m| !m.removable && m.b_is_better)
+        .count();
+    let swaps_input = outcome
+        .matches
+        .iter()
+        .filter(|m| !m.removable && m.b_is_better)
+        .map(|m| format!("{}\t{}", to_string(&m.a), to_string(&m.b)))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let rows: Vec<serde_json::Value> = outcome
+        .matches
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "a": to_string(&m.a),
+                "b": to_string(&m.b),
+                "distance": m.distance,
+                "verdict": if m.removable {
+                    "B is the smaller file — removable"
+                } else {
+                    "B is the bigger file — swap available"
+                },
+                "removable": m.removable,
+                "a_pixels": m.a_pixels,
+                "b_pixels": m.b_pixels,
+                "a_bytes": m.a_bytes,
+                "b_bytes": m.b_bytes,
+            })
         })
         .collect();
-    let (rows, rows_more) = truncate_rows(rows);
+    let rows_json = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
 
     let tpl = SimilarCompareTemplate {
         a_root: a_root.to_string(),
@@ -1436,14 +1542,35 @@ fn render_similar_compare(
         lossy_b: outcome.lossy_b,
         match_count: outcome.matches.len(),
         removable_count: outcome.removable_b.len(),
-        rows,
-        rows_more,
+        swap_count,
+        duplicate_count: outcome.exact_duplicates.len(),
+        rows_json,
+        duplicates_json: serde_json::to_string(
+            &outcome
+                .exact_duplicates
+                .iter()
+                .map(|d| {
+                    serde_json::json!({
+                        "keeper": to_string(&d.keeper),
+                        "path": to_string(&d.path),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".into()),
+        duplicates_input: outcome
+            .exact_duplicates
+            .iter()
+            .map(|d| to_string(&d.path))
+            .collect::<Vec<_>>()
+            .join("\n"),
         candidates_input: outcome
             .removable_b
             .iter()
             .map(|p| to_string(p))
             .collect::<Vec<_>>()
             .join("\n"),
+        swaps_input,
     };
     tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
 }
@@ -1454,21 +1581,24 @@ fn render_similar(
     cache_reused: usize,
     cache_computed: usize,
 ) -> String {
-    let mut rows: Vec<SimilarRowView> = Vec::new();
-    for group in &outcome.groups {
-        for candidate in &group.candidates {
-            rows.push(SimilarRowView {
-                keeper: to_string(&group.keeper),
-                candidate: to_string(&candidate.path),
-                distance: candidate.distance,
-                keeper_pixels: group.keeper_pixels,
-                candidate_pixels: candidate.pixels,
-                keeper_bytes: group.keeper_bytes,
-                candidate_bytes: candidate.bytes,
-            });
-        }
-    }
-    let (rows, rows_more) = truncate_rows(rows);
+    let rows: Vec<serde_json::Value> = outcome
+        .groups
+        .iter()
+        .flat_map(|group| {
+            group.candidates.iter().map(move |candidate| {
+                serde_json::json!({
+                    "keeper": to_string(&group.keeper),
+                    "candidate": to_string(&candidate.path),
+                    "distance": candidate.distance,
+                    "keeper_pixels": group.keeper_pixels,
+                    "candidate_pixels": candidate.pixels,
+                    "keeper_bytes": group.keeper_bytes,
+                    "candidate_bytes": candidate.bytes,
+                })
+            })
+        })
+        .collect();
+    let rows_json = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
 
     let tpl = SimilarResultTemplate {
         root: root.to_string(),
@@ -1479,8 +1609,27 @@ fn render_similar(
         group_count: outcome.groups.len(),
         candidate_count: outcome.candidates,
         removable_count: outcome.removable.len(),
-        rows,
-        rows_more,
+        duplicate_count: outcome.exact_duplicates.len(),
+        rows_json,
+        duplicates_json: serde_json::to_string(
+            &outcome
+                .exact_duplicates
+                .iter()
+                .map(|d| {
+                    serde_json::json!({
+                        "keeper": to_string(&d.keeper),
+                        "path": to_string(&d.path),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".into()),
+        duplicates_input: outcome
+            .exact_duplicates
+            .iter()
+            .map(|d| to_string(&d.path))
+            .collect::<Vec<_>>()
+            .join("\n"),
         candidates_input: outcome
             .removable
             .iter()
@@ -1489,6 +1638,131 @@ fn render_similar(
             .join("\n"),
     };
     tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
+}
+
+/// Copy or move a filtered table selection into one destination folder.
+async fn compare_transfer(
+    Form(form): Form<TableTransferForm>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
+    let files = parse_paths(&form.files);
+    if files.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "no filtered files to transfer".into()));
+    }
+    let destination = form.destination.trim().to_string();
+    if destination.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "provide a destination folder".into()));
+    }
+    let op = match form.op.as_deref() {
+        Some("move") => Operation::Move,
+        _ => Operation::Copy,
+    };
+
+    let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+    let progress_tx = tx.clone();
+    let done_tx = tx.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let progress = move |done: usize, total: usize| {
+            let _ = progress_tx.send(Msg::Progress(done, total));
+        };
+        progress(0, files.len());
+        let outcome = transfer_files_with_progress(
+            &files,
+            Path::new(&destination),
+            op,
+            &progress,
+        );
+        let tpl = TransferResultTemplate {
+            destination,
+            operation: match op {
+                Operation::Move => "Move",
+                Operation::Copy => "Copy",
+            },
+            verb: match op {
+                Operation::Move => "moved",
+                Operation::Copy => "copied",
+            },
+            planned: outcome.planned,
+            transferred: outcome.transferred,
+            renamed_on_collision: outcome.renamed_on_collision,
+            failure_count: outcome.failures.len(),
+            failures: outcome
+                .failures
+                .iter()
+                .map(|(path, reason)| (to_string(path), reason.clone()))
+                .collect(),
+        };
+        let html = tpl.render().unwrap_or_else(|e| format!("render error: {e}"));
+        let _ = done_tx.send(Msg::Done(html));
+    });
+
+    Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
+}
+
+async fn similar_swap(
+    Form(form): Form<SwapForm>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
+    let mut swaps: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for line in form.swaps.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let a = parts.next().unwrap_or("").trim();
+        let b = parts.next().unwrap_or("").trim();
+        if !a.is_empty() && !b.is_empty() {
+            swaps.push((PathBuf::from(a), PathBuf::from(b)));
+        }
+    }
+    if swaps.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "no swap pairs to run".into()));
+    }
+    let a_root = PathBuf::from(form.a_root.trim());
+    let b_root = PathBuf::from(form.b_root.trim());
+    require_dir(&a_root)?;
+    require_dir(&b_root)?;
+    require_disjoint_trees(&a_root, &b_root)?;
+    let purgatory = form.purgatory.trim().to_string();
+    if purgatory.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "provide a purgatory folder".into()));
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+    let progress_tx = tx.clone();
+    let done_tx = tx.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let progress = move |done: usize, total: usize| {
+            let _ = progress_tx.send(Msg::Progress(done, total));
+        };
+        progress(0, swaps.len() * 2);
+        let outcome = swap_better_copies_with_progress(
+            &swaps,
+            &a_root,
+            &b_root,
+            Path::new(&purgatory),
+            &progress,
+        );
+        let tpl = SimilarSwapTemplate {
+            a_root: to_string(&a_root),
+            b_root: to_string(&b_root),
+            purgatory,
+            planned: outcome.planned,
+            swapped: outcome.swapped,
+            purged: outcome.purged,
+            failure_count: outcome.failures.len(),
+            failures: outcome
+                .failures
+                .iter()
+                .map(|(path, reason)| (to_string(path), reason.clone()))
+                .collect(),
+        };
+        let html = tpl.render().unwrap_or_else(|e| format!("render error: {e}"));
+        let _ = done_tx.send(Msg::Done(html));
+    });
+
+    Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
 }
 
 async fn organize_form() -> OrganizeFormTemplate {
@@ -1509,6 +1783,22 @@ async fn organize_scan(
     let destination = form.destination.trim().to_string();
     if destination.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "provide a destination root".into()));
+    }
+    require_dir(Path::new(&source_str))?;
+    // Organizing into a folder inside the source would re-process the moved
+    // files on the next run (and can loop); the source may live inside the
+    // destination, but not the other way around.
+    let source_resolved = resolved_path(Path::new(&source_str));
+    let destination_resolved = resolved_path(Path::new(&destination));
+    if destination_resolved.starts_with(&source_resolved) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "the destination is inside the source tree: {} vs {}",
+                destination_resolved.display(),
+                source_resolved.display()
+            ),
+        ));
     }
     let format = form
         .format
@@ -1764,6 +2054,14 @@ async fn sets_run(
     for candidate in &candidates {
         require_dir(candidate)?;
     }
+    // Every tree compared against every other must be disjoint.
+    let mut trees: Vec<&PathBuf> = vec![&a];
+    trees.extend(candidates.iter());
+    for (i, first) in trees.iter().enumerate() {
+        for second in trees.iter().skip(i + 1) {
+            require_disjoint_trees(first, second)?;
+        }
+    }
 
     let (tx, rx) = mpsc::unbounded_channel::<Msg>();
     let progress_tx = tx.clone();
@@ -1831,16 +2129,12 @@ fn render_compare(
         for p in &g.a {
             dup_rows.push(DupRowView {
                 tree: "A".into(),
-                badge: "ok".into(),
-                row_class: "row-a".into(),
                 path: to_string(p),
             });
         }
         for p in &g.b {
             dup_rows.push(DupRowView {
                 tree: "B".into(),
-                badge: "dirty".into(),
-                row_class: "row-b".into(),
                 path: to_string(p),
             });
         }
@@ -1871,16 +2165,23 @@ fn render_compare(
         .map(|p| PathRowView { path: to_string(p) })
         .collect();
 
-    let (a_rows, a_more) = truncate_rows(a_rows);
-    let (dup_rows, dup_more) = truncate_rows(dup_rows);
-    let (b_rows, b_more) = truncate_rows(b_rows);
+    // Full result sets are embedded as JSON so the filter box can search
+    // everything, not just the rows that fit on screen.
+    let a_json = serde_json::to_string(&a_rows.iter().map(|r| &r.path).collect::<Vec<_>>())
+        .unwrap_or_else(|_| "[]".into());
+    let b_json = serde_json::to_string(&b_rows.iter().map(|r| &r.path).collect::<Vec<_>>())
+        .unwrap_or_else(|_| "[]".into());
+    let dup_json = serde_json::to_string(
+        &dup_rows
+            .iter()
+            .map(|r| serde_json::json!({ "tree": r.tree, "path": r.path }))
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or_else(|_| "[]".into());
 
-    let unreadable_rows: Vec<PathRowView> = cmp
-        .unreadable
-        .iter()
-        .map(|p| PathRowView { path: to_string(p) })
-        .collect();
-    let (unreadable_rows, unreadable_more) = truncate_rows(unreadable_rows);
+    let unreadable_all: Vec<String> = cmp.unreadable.iter().map(|p| to_string(p)).collect();
+    let unreadable_json =
+        serde_json::to_string(&unreadable_all).unwrap_or_else(|_| "[]".into());
 
     // Unreadable files (decoder failed on both extension and content sniff)
     // that live in a date-named folder are still placeable: the folder proxy
@@ -1912,22 +2213,18 @@ fn render_compare(
         b: b.to_string(),
         cache_reused,
         cache_computed,
-        a_rows,
-        a_more,
-        dup_rows,
-        dup_more,
-        b_rows,
-        b_more,
         a_only_count: cmp.a_only.len(),
         b_only_count: cmp.b_only.len(),
         dup_total,
         dup_pairs_all,
         dup_b_files_all,
-        unreadable_rows,
-        unreadable_more,
         unreadable_count: cmp.unreadable.len(),
         unreadable_dated_count,
         originals_all,
+        a_json,
+        b_json,
+        dup_json,
+        unreadable_json,
     };
     tpl.render().unwrap_or_else(|e| format!("render error: {e}"))
 }
@@ -2098,6 +2395,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .route("/settings/flush", post(settings_flush))
         .route("/settings/clear", post(settings_clear))
         .route("/similar", get(similar_form))
+        .route("/similar/swap", post(similar_swap))
+        .route("/compare/transfer", post(compare_transfer))
         .route("/similar/run", post(similar_run))
         .route("/organize", get(organize_form))
         .route("/organize/scan", post(organize_scan))

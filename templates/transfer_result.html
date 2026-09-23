@@ -1,0 +1,50 @@
+<section class="panel">
+  <div class="panel-toolbar">
+    <div class="toolbar-title">
+      <h2>{{ operation }} Complete</h2>
+      <span class="subtitle">&rarr; {{ destination }} · copy &rarr; byte-verify{% if operation == "Move" %} &rarr; remove{% endif %}; collisions renamed, never overwritten.</span>
+    </div>
+  </div>
+
+  <div class="merge-summary">
+    <div class="summary-stat">
+      <span class="summary-value">{{ transferred }}</span>
+      <span class="summary-label">{{ verb }} of {{ planned }}</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ renamed_on_collision }}</span>
+      <span class="summary-label">renamed (name collision)</span>
+    </div>
+    <div class="summary-stat">
+      <span class="summary-value">{{ failure_count }}</span>
+      <span class="summary-label">failures (sources left in place)</span>
+    </div>
+  </div>
+
+  {% if failure_count > 0 %}
+  <article class="collection">
+    <div class="collection-head">
+      <span class="collection-title">Failures</span>
+      <span class="badge badge-dirty">{{ failure_count }}</span>
+      <span class="collection-sub">nothing was lost — sources are intact</span>
+    </div>
+    <div class="table-scroll">
+      <table class="compare-table">
+        <thead><tr><th>Path</th><th>Reason</th></tr></thead>
+        <tbody>
+          {% for f in failures %}
+          <tr class="row-b">
+            <td class="path clickable" data-reveal="{{ f.0 }}">{{ f.0 }}</td>
+            <td class="muted">{{ f.1 }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </article>
+  {% endif %}
+
+  <div class="toolbar-actions">
+    <a class="btn btn-secondary" href="/compare">Back to compare</a>
+  </div>
+</section>
