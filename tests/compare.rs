@@ -221,7 +221,7 @@ fn compare_sets_reports_the_four_numbers() {
     std::fs::write(c.join("c_dup.jpg"), &img).unwrap();
     std::fs::write(c.join("c_and_b.jpg"), &shared_img).unwrap();
 
-    let cmp = compare_sets(&a, &[b, c]).unwrap();
+    let cmp = compare_sets(&a, &[b.clone(), c.clone()]).unwrap();
 
     // #1 unique to A
     assert_eq!(cmp.a_unique, 1);
@@ -232,6 +232,34 @@ fn compare_sets_reports_the_four_numbers() {
     assert_eq!(cmp.candidates_only, 3); // b_only + b_and_c + c_and_b
     // #4 duplicates between A and B+C
     assert_eq!(cmp.duplicates, 2); // b_dup + c_dup
+
+    // The cached path must produce identical numbers from one scan per tree,
+    // and a repeated call must reuse every hash.
+    use std::sync::Mutex;
+    use dedupe2::Scanner::cache::ScanCache;
+    use dedupe2::Scanner::compare::compare_sets_cached;
+
+    let cache = Mutex::new(ScanCache::new());
+    let cached =
+        compare_sets_cached(&a, &[b.clone(), c.clone()], &cache, &|_, _| {}).unwrap();
+    assert_eq!(cached.a_total, cmp.a_total);
+    assert_eq!(cached.a_unique, cmp.a_unique);
+    assert_eq!(cached.a_unreadable, cmp.a_unreadable);
+    assert_eq!(cached.duplicates, cmp.duplicates);
+    assert_eq!(cached.candidates_only, cmp.candidates_only);
+    for (got, expected) in cached.candidates.iter().zip(&cmp.candidates) {
+        assert_eq!(got.total, expected.total);
+        assert_eq!(got.duplicates, expected.duplicates);
+        assert_eq!(got.unique_to_tree, expected.unique_to_tree);
+        assert_eq!(got.shared_with_candidates, expected.shared_with_candidates);
+        assert_eq!(got.unreadable, expected.unreadable);
+    }
+
+    let reused_before = cache.lock().unwrap().stats().reused;
+    compare_sets_cached(&a, &[b, c], &cache, &|_, _| {}).unwrap();
+    let stats = cache.lock().unwrap().stats();
+    assert_eq!(stats.reused - reused_before, 7, "all seven files reused");
+    assert_eq!(stats.computed, 7);
 }
 
 #[test]
@@ -1004,4 +1032,108 @@ fn synthesize_avi(movi: &[u8], idit: &[u8]) -> Vec<u8> {
     v.extend_from_slice(b"AVI ");
     v.extend_from_slice(&body);
     v
+}
+
+#[test]
+fn cached_compare_matches_uncached_and_reuses_hashes() {
+    use std::sync::Mutex;
+    use dedupe2::Scanner::cache::ScanCache;
+    use dedupe2::Scanner::compare::compare_folders_cached;
+
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let img = sample("jpg-exif-mod/image1.JPG");
+    write(a.path(), "a.jpg", &img);
+    write(a.path(), "only-a.jpg", b"unique-a");
+    write(b.path(), "b.jpg", &img);
+    write(b.path(), "only-b.jpg", b"unique-b");
+
+    let plain = compare_folders(a.path(), b.path()).unwrap();
+    let cache = Mutex::new(ScanCache::new());
+    let cached = compare_folders_cached(a.path(), b.path(), &cache, &|_, _| {}).unwrap();
+
+    assert_eq!(cached.duplicates.len(), plain.duplicates.len());
+    assert_eq!(cached.a_only, plain.a_only);
+    assert_eq!(cached.b_only, plain.b_only);
+    assert_eq!(cached.unreadable, plain.unreadable);
+    assert_eq!(cached.a, a.path());
+    assert_eq!(cached.b, b.path());
+
+    let before = cache.lock().unwrap().stats();
+    let again = compare_folders_cached(a.path(), b.path(), &cache, &|_, _| {}).unwrap();
+    let after = cache.lock().unwrap().stats();
+    assert_eq!(again.duplicates.len(), plain.duplicates.len());
+    assert_eq!(after.reused - before.reused, 4, "all four files reused");
+    assert_eq!(after.computed, before.computed);
+}
+
+#[test]
+fn compare_snapshots_classifies_without_touching_the_filesystem() {
+    use std::time::SystemTime;
+    use dedupe2::Scanner::compare::compare_snapshots;
+    use dedupe2::Scanner::scan::{ScanStats, ScannedFile, TreeSnapshot};
+
+    fn snapshot(root: &str, files: &[(&str, u64, bool)]) -> TreeSnapshot {
+        let root_path = PathBuf::from(root);
+        TreeSnapshot {
+            root: root_path.clone(),
+            files: files
+                .iter()
+                .map(|(name, hash, decoded)| ScannedFile {
+                    path: root_path.join(name),
+                    size: 1,
+                    modified: None,
+                    hash: *hash,
+                    decoded: *decoded,
+                })
+                .collect(),
+            scanned_at: SystemTime::now(),
+            stats: ScanStats {
+                files: files.len(),
+                ..Default::default()
+            },
+        }
+    }
+
+    // Fake absolute paths: this test must never read the filesystem.
+    let a = snapshot(
+        "/a",
+        &[
+            ("dup1", 10, true),
+            ("dup2", 10, true),
+            ("zzz", 11, true),
+            ("unique", 20, true),
+            ("broken", 10, false), // unreadable A is ignored, never grouped
+        ],
+    );
+    let b = snapshot(
+        "/b",
+        &[
+            ("only-b", 40, true),
+            ("dup", 10, true),
+            ("broken", 10, false), // unreadable B is listed, not grouped
+            ("zzz", 11, true),
+            ("only-a", 41, true),
+        ],
+    );
+
+    let cmp = compare_snapshots(&a, &b);
+
+    assert_eq!(cmp.a, PathBuf::from("/a"));
+    assert_eq!(cmp.b, PathBuf::from("/b"));
+    assert_eq!(cmp.duplicates.len(), 2);
+    assert_eq!(
+        cmp.duplicates[0].a,
+        vec![PathBuf::from("/a/dup1"), PathBuf::from("/a/dup2")]
+    );
+    assert_eq!(cmp.duplicates[0].b, vec![PathBuf::from("/b/dup")]);
+    assert_eq!(cmp.duplicates[1].a, vec![PathBuf::from("/a/zzz")]);
+    assert_eq!(cmp.duplicates[1].b, vec![PathBuf::from("/b/zzz")]);
+    assert_eq!(cmp.a_only, vec![PathBuf::from("/a/unique")]);
+    assert_eq!(
+        cmp.b_only,
+        vec![PathBuf::from("/b/only-a"), PathBuf::from("/b/only-b")],
+        "b-only paths are sorted"
+    );
+    assert_eq!(cmp.unreadable, vec![PathBuf::from("/b/broken")]);
 }

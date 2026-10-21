@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 
-use crate::Scanner::fastScan::hash_image_data_parallel;
+use crate::Scanner::scan::{scan_trees, TreeSnapshot};
 use crate::exif::{creation_dates_batch, CreationDate};
 use crate::image_reader::collect_image_files;
 
@@ -66,37 +66,34 @@ fn compare_folders_inner(
     cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
     progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> Result<Comparison, Box<dyn std::error::Error>> {
-    let a_files = collect_image_files(a)?;
-    let b_files = collect_image_files(b)?;
+    let trees = scan_trees(&[a.to_path_buf(), b.to_path_buf()], 64 * 1024, cache, progress)?;
+    Ok(compare_snapshots(&trees[0], &trees[1]))
+}
 
-    let a_len = a_files.len();
-    let mut all = a_files.clone();
-    all.extend(b_files.clone());
-
-    let hashes: Vec<(u64, bool)> = match cache {
-        Some(cache) => crate::Scanner::cache::shallow_hashes_cached(cache, &all, 64 * 1024, progress),
-        None => hash_image_data_parallel(&all, 64 * 1024, progress)
-            .into_iter()
-            .map(|h| (h.hash, h.decoded))
-            .collect(),
-    };
-
-    let mut map: HashMap<u64, (Vec<PathBuf>, Vec<PathBuf>)> = HashMap::new();
+/// Compare two already-scanned trees: group files by shallow hash and
+/// classify duplicate groups, A-only, B-only, and unreadable B files.
+/// Walking and hashing happen in `scan`, not here.
+pub fn compare_snapshots(a: &TreeSnapshot, b: &TreeSnapshot) -> Comparison {
+    let mut by_hash: HashMap<u64, (Vec<PathBuf>, Vec<PathBuf>)> = HashMap::new();
+    for file in a.decoded() {
+        by_hash
+            .entry(file.hash)
+            .or_default()
+            .0
+            .push(file.path.clone());
+    }
     let mut unreadable = Vec::new();
-    for (i, path) in all.iter().enumerate() {
-        if !hashes[i].1 {
-            // Only candidate-tree (B) files are surfaced as unreadable; an
-            // unreadable file in the destination library is simply ignored.
-            if i >= a_len {
-                unreadable.push(path.clone());
-            }
-            continue;
-        }
-        let entry = map.entry(hashes[i].0).or_default();
-        if i < a_len {
-            entry.0.push(path.clone());
+    for file in &b.files {
+        if file.decoded {
+            by_hash
+                .entry(file.hash)
+                .or_default()
+                .1
+                .push(file.path.clone());
         } else {
-            entry.1.push(path.clone());
+            // Only candidate-tree (B) files are surfaced as unreadable; an
+            // unreadable file in the destination library is ignored.
+            unreadable.push(file.path.clone());
         }
     }
 
@@ -104,7 +101,7 @@ fn compare_folders_inner(
     let mut a_only = Vec::new();
     let mut b_only = Vec::new();
 
-    let mut groups: Vec<(Vec<PathBuf>, Vec<PathBuf>)> = map.into_values().collect();
+    let mut groups: Vec<(Vec<PathBuf>, Vec<PathBuf>)> = by_hash.into_values().collect();
     groups.sort_by_key(|(a, b)| {
         a.first()
             .cloned()
@@ -129,14 +126,14 @@ fn compare_folders_inner(
     b_only.sort();
     unreadable.sort();
 
-    Ok(Comparison {
-        a: a.to_path_buf(),
-        b: b.to_path_buf(),
+    Comparison {
+        a: a.root.clone(),
+        b: b.root.clone(),
         duplicates,
         a_only,
         b_only,
         unreadable,
-    })
+    }
 }
 
 /// Resolve EXIF capture dates (DateTimeOriginal, then CreateDate, else
@@ -233,67 +230,48 @@ fn compare_sets_inner(
     cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
     progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> Result<SetComparison, Box<dyn std::error::Error>> {
-    let shallow = |files: &[PathBuf]| -> Vec<(u64, bool)> {
-        match cache {
-            Some(cache) => crate::Scanner::cache::shallow_hashes_cached(cache, files, 64 * 1024, progress),
-            None => hash_image_data_parallel(files, 64 * 1024, progress)
-                .into_iter()
-                .map(|h| (h.hash, h.decoded))
-                .collect(),
-        }
-    };
-
-    let a_files = collect_image_files(a)?;
-    let a_hashes = shallow(&a_files);
+    let mut roots = Vec::with_capacity(candidates.len() + 1);
+    roots.push(a.to_path_buf());
+    roots.extend(candidates.iter().cloned());
+    let trees = scan_trees(&roots, 64 * 1024, cache, progress)?;
+    let a_tree = &trees[0];
 
     let mut a_set: HashSet<u64> = HashSet::new();
-    let mut a_unreadable = 0usize;
-    for (hash, decoded) in &a_hashes {
-        if *decoded {
-            a_set.insert(*hash);
-        } else {
-            a_unreadable += 1;
-        }
+    for file in a_tree.decoded() {
+        a_set.insert(file.hash);
     }
 
     // Per tree: decoded file hashes (files counted individually, so internal
     // duplicates count once per file).
     let mut tree_hashes: Vec<HashSet<u64>> = Vec::new();
     let mut tree_counts = Vec::new();
-
     let mut duplicates = 0usize;
-    for root in candidates {
-        let files = collect_image_files(root)?;
-        let hashes = shallow(&files);
 
+    for (index, root) in candidates.iter().enumerate() {
+        let tree = &trees[index + 1];
         let mut set: HashSet<u64> = HashSet::new();
         let mut dup = 0usize;
-        let mut unreadable = 0usize;
-        for (hash, decoded) in &hashes {
-            if !*decoded {
-                unreadable += 1;
-                continue;
-            }
-            set.insert(*hash);
-            if a_set.contains(hash) {
+        for file in tree.decoded() {
+            set.insert(file.hash);
+            if a_set.contains(&file.hash) {
                 dup += 1;
             }
         }
         duplicates += dup;
-        let total = files.len();
         tree_hashes.push(set);
         tree_counts.push(TreeCounts {
             root: root.clone(),
-            total,
+            total: tree.stats.files,
             duplicates: dup,
             unique_to_tree: 0,
             shared_with_candidates: 0,
-            unreadable,
+            unreadable: tree.stats.unreadable,
         });
     }
 
     // Exclusivity: a candidate file is unique to its tree when its hash is in
-    // no other candidate tree (it is already known not to be in A).
+    // no other candidate tree (it is already known not to be in A). Every
+    // tree was scanned once above, so this is set arithmetic only.
     for (i, counts) in tree_counts.iter_mut().enumerate() {
         let others: HashSet<u64> = tree_hashes
             .iter()
@@ -302,15 +280,13 @@ fn compare_sets_inner(
             .flat_map(|(_, s)| s.iter().copied())
             .collect();
 
-        let files = collect_image_files(&counts.root)?;
-        let hashes = hash_image_data_parallel(&files, 64 * 1024, progress);
         let mut unique = 0usize;
         let mut shared = 0usize;
-        for fh in &hashes {
-            if !fh.decoded || a_set.contains(&fh.hash) {
+        for file in trees[i + 1].decoded() {
+            if a_set.contains(&file.hash) {
                 continue;
             }
-            if others.contains(&fh.hash) {
+            if others.contains(&file.hash) {
                 shared += 1;
             } else {
                 unique += 1;
@@ -327,12 +303,12 @@ fn compare_sets_inner(
 
     Ok(SetComparison {
         a: a.to_path_buf(),
-        a_total: a_files.len(),
+        a_total: a_tree.stats.files,
         a_unique: a_set
             .iter()
             .filter(|h| !candidate_union_contains(&tree_hashes, **h))
             .count(),
-        a_unreadable,
+        a_unreadable: a_tree.stats.unreadable,
         duplicates,
         candidates_only,
         candidates: tree_counts,

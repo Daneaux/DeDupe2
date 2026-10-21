@@ -1565,22 +1565,32 @@ pub fn shallow_hashes_cached(
     paths
         .par_iter()
         .map(|path| {
-            // NOTE: the lookup guard must be dropped before the store lock —
-            // a `match lock(...)` scrutinee guard would live through the
-            // whole match and deadlock the second lock.
-            let cached = { lock(cache).shallow_hash_lookup(path) };
-            let result = match cached {
-                Some(value) => value,
-                None => {
-                    let value = image_reader::hash_image_data_status(path, n);
-                    lock(cache).shallow_hash_store(path, value);
-                    value
-                }
-            };
+            let (value, _reused) = shallow_hash_cached(cache, path, n);
             progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
-            result
+            value
         })
         .collect()
+}
+
+/// One shallow hash through the cache. The value is computed outside the
+/// lock; `reused` reports whether it came from the cache.
+pub fn shallow_hash_cached(
+    cache: &Mutex<ScanCache>,
+    path: &Path,
+    n: usize,
+) -> ((u64, bool), bool) {
+    // NOTE: the lookup guard must be dropped before the store lock — a
+    // `match lock(...)` scrutinee guard would live through the whole match
+    // and deadlock the second lock.
+    let cached = { lock(cache).shallow_hash_lookup(path) };
+    match cached {
+        Some(value) => (value, true),
+        None => {
+            let value = image_reader::hash_image_data_status(path, n);
+            lock(cache).shallow_hash_store(path, value);
+            (value, false)
+        }
+    }
 }
 
 /// Whole-file byte hash through the cache, computed outside the lock.

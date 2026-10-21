@@ -1,22 +1,12 @@
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
-use dedupe2::Scanner::scanner::ScannedFile;
 use dedupe2::exif::CreationDate;
 use dedupe2::filemover::{
     find_duplicates, merge_dirs, organize_by_date, relocate_tree, DuplicateStrategy, Operation,
 };
-use dedupe2::volumes::FileType;
 
-fn scanned_file(path: PathBuf, date: CreationDate) -> ScannedFile {
-    ScannedFile {
-        path,
-        size: 0,
-        modified: SystemTime::now(),
-        file_type: FileType { ext: String::new() },
-        hash: 0,
-        creation_date: date,
-    }
+fn dated(path: PathBuf, date: CreationDate) -> (PathBuf, CreationDate) {
+    (path, date)
 }
 
 #[test]
@@ -45,7 +35,7 @@ fn organize_by_date_builds_event_structure() {
     let photo = src.path().join("photo.jpg");
     std::fs::write(&photo, "photo").unwrap();
 
-    let files = vec![scanned_file(
+    let files = vec![dated(
         photo.clone(),
         CreationDate::DateCreated("2023:03:15 14:30:00".into()),
     )];
@@ -63,7 +53,7 @@ fn organize_by_date_unknown_goes_to_unknown() {
     let photo = src.path().join("photo.jpg");
     std::fs::write(&photo, "photo").unwrap();
 
-    let files = vec![scanned_file(photo.clone(), CreationDate::Unknown)];
+    let files = vec![dated(photo.clone(), CreationDate::Unknown)];
 
     organize_by_date(&files, dst.path(), "", Operation::Copy).unwrap();
 

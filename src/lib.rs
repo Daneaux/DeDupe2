@@ -3,5 +3,4 @@ pub mod Scanner;
 pub mod exif;
 pub mod filemover;
 pub mod image_reader;
-pub mod volumes;
 pub mod web;

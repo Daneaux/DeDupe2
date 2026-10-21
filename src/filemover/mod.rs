@@ -5,8 +5,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::Scanner::compare::{deep_scan_pairs_with_progress, DupPair};
-use crate::Scanner::fastScan::hash_image_data_parallel;
-use crate::Scanner::scanner::ScannedFile;
+use crate::Scanner::scan::hash_image_data_parallel;
 use crate::exif::{creation_date, CreationDate};
 use crate::image_reader::{
     collect_image_files, hash_all_bytes, hash_image_data, is_supported_image, ReadLimit,
@@ -385,8 +384,11 @@ pub fn relocate_tree(src: &Path, dst: &Path, op: Operation) -> Result<(), FileMo
     Ok(())
 }
 
+/// `files` are `(source, capture date)` pairs: scanning deliberately does
+/// not extract dates, so callers that organize by date resolve them in a
+/// separate pass.
 pub fn organize_by_date(
-    files: &[ScannedFile],
+    files: &[(PathBuf, CreationDate)],
     dst_root: &Path,
     source_name: &str,
     op: Operation,
@@ -394,8 +396,8 @@ pub fn organize_by_date(
     let event = extract_event(source_name);
     let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
 
-    for file in files {
-        let folder = match parse_date(&file.creation_date) {
+    for (path, date) in files {
+        let folder = match parse_date(date) {
             Some((year, month, day)) => {
                 let name = if event.is_empty() {
                     format!("{month:02}-{day:02}")
@@ -407,14 +409,13 @@ pub fn organize_by_date(
             None => dst_root.join("unknown"),
         };
 
-        let filename = file
-            .path
+        let filename = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("file");
         let unique = unique_in_dir(&folder, filename, &mut taken);
         let target = folder.join(unique);
-        relocate_file(&file.path, &target, op)?;
+        relocate_file(path, &target, op)?;
     }
 
     Ok(())
