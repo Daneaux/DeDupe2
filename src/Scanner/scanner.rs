@@ -1,17 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use walkdir::WalkDir;
-
-use crate::exif::{creation_dates_batch, CreationDate};
-use crate::image_reader::{hash_all_bytes, hash_first_n_bytes};
+use crate::exif::CreationDate;
 use crate::volumes::{FileType, Volume};
-
-#[derive(Debug, Clone, Copy)]
-enum HashKind {
-    Header,
-    Full,
-}
 
 #[derive(Debug, Clone)]
 pub struct ScanTarget {
@@ -52,73 +43,6 @@ pub struct ScannedTree {
     pub files: Vec<ScannedFile>,
     pub scan_time: SystemTime,
     pub target: ScanTarget,
-}
-
-pub fn shallow_scan(target: &ScanTarget) -> ScannedTree {
-    scan(target, HashKind::Header)
-}
-
-pub fn deep_scan(target: &ScanTarget) -> ScannedTree {
-    scan(target, HashKind::Full)
-}
-
-fn scan(target: &ScanTarget, kind: HashKind) -> ScannedTree {
-    let mut files = Vec::new();
-    for path in &target.paths {
-        scan_path(path, kind, target, &mut files);
-    }
-
-    // Dates for the whole tree in one pass: in-process readers per file,
-    // one batched exiftool subprocess for the undatable files, folder
-    // names last (see creation_dates_batch).
-    let dates = creation_dates_batch(
-        &files.iter().map(|f| f.path.clone()).collect::<Vec<_>>(),
-        &|_, _| {},
-    );
-    for (file, date) in files.iter_mut().zip(dates) {
-        file.creation_date = date;
-    }
-
-    ScannedTree {
-        root: target.volume.path.clone(),
-        files,
-        scan_time: SystemTime::now(),
-        target: target.clone(),
-    }
-}
-
-fn scan_path(root: &Path, kind: HashKind, target: &ScanTarget, files: &mut Vec<ScannedFile>) {
-    for entry in WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        if !target.includes_file(entry.path()) {
-            continue;
-        }
-
-        let meta = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        let path = entry.into_path();
-        let hash = match kind {
-            HashKind::Header => hash_first_n_bytes(&path, target.prefix_bytes).unwrap_or(0),
-            HashKind::Full => hash_all_bytes(&path).unwrap_or(0),
-        };
-
-        files.push(ScannedFile {
-            path: path.clone(),
-            size: meta.len(),
-            modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-            file_type: file_type_of(&path),
-            hash,
-            creation_date: CreationDate::Unknown,
-        });
-    }
 }
 
 pub(crate) fn file_type_of(path: &Path) -> FileType {
