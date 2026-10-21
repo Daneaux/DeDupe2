@@ -4,6 +4,7 @@ mod heic;
 mod isobmff;
 mod jpg;
 mod raster;
+mod thumb;
 mod png;
 mod phash;
 mod movie;
@@ -16,13 +17,14 @@ use walkdir::WalkDir;
 
 pub use bytes::read_bytes;
 pub use phash::{
-    distance, distance_of, lossy_kind, mean_chroma, phash, phash_of, Phash,
-    SIMILAR_MAX_DISTANCE,
+    distance, distance_of, gradient_hash_of, lossy_kind, mean_chroma, phash, phash_of,
+    Phash, DHASH_SIMILAR_MAX_DISTANCE, SIMILAR_MAX_DISTANCE,
 };
 pub use hash::{
     hash_all_bytes, hash_first_n_bytes, hash_image_data, hash_image_data_all,
     hash_image_data_n, hash_image_data_status,
 };
+pub use thumb::thumbnail_jpeg;
 pub use types::{ImageData, ImageReaderError, PixelData, ReadLimit};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

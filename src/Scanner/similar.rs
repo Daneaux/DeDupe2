@@ -16,7 +16,10 @@ use std::sync::Mutex;
 
 use rayon::prelude::*;
 
-use crate::image_reader::{collect_image_files, distance, lossy_kind, Phash, SIMILAR_MAX_DISTANCE};
+use crate::image_reader::{
+    collect_image_files, distance, lossy_kind, Phash, DHASH_SIMILAR_MAX_DISTANCE,
+    SIMILAR_MAX_DISTANCE,
+};
 use crate::Scanner::cache::{
     full_content_cached, perceptual_cached, shallow_hashes_cached, ScanCache,
 };
@@ -92,11 +95,12 @@ pub fn find_similar_with_progress(
             let perceptual = perceptual_cached(cache, path);
             let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
-            perceptual.map(|(phash, chroma)| LossyEntry {
+            perceptual.map(|(phash, chroma, dhash)| LossyEntry {
                 path: path.clone(),
                 kind: *kind,
                 phash,
                 chroma,
+                dhash,
                 bytes,
             })
         })
@@ -177,7 +181,7 @@ pub fn find_similar_with_progress(
             if !chroma_compatible(entries[i].chroma, entries[j].chroma) {
                 continue;
             }
-            if distance(entries[i].phash.hash, entries[j].phash.hash) <= SIMILAR_MAX_DISTANCE {
+            if hashes_similar(&entries[i], &entries[j]) {
                 let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
                 if ri != rj {
                     parent[ri] = rj;
@@ -309,7 +313,22 @@ struct LossyEntry {
     phash: Phash,
     /// Mean chroma (colorfulness), when measurable.
     chroma: Option<u8>,
+    /// Gradient hash: the second signature a similar pair must agree on.
+    dhash: Option<u64>,
     bytes: u64,
+}
+
+/// A pair is only "similar" when BOTH independent structure hashes agree —
+/// a lone pHash collision of two different photos must not qualify.
+fn hashes_similar(a: &LossyEntry, b: &LossyEntry) -> bool {
+    if distance(a.phash.hash, b.phash.hash) > SIMILAR_MAX_DISTANCE {
+        return false;
+    }
+    match (a.dhash, b.dhash) {
+        (Some(a_hash), Some(b_hash)) => distance(a_hash, b_hash) <= DHASH_SIMILAR_MAX_DISTANCE,
+        // No second signature: refuse rather than risk a false positive.
+        _ => false,
+    }
 }
 
 /// A chroma this low means the picture is effectively black and white.
@@ -356,11 +375,12 @@ fn collect_lossy(
             let perceptual = perceptual_cached(cache, path);
             let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
-            perceptual.map(|(phash, chroma)| LossyEntry {
+            perceptual.map(|(phash, chroma, dhash)| LossyEntry {
                 path: path.clone(),
                 kind: *kind,
                 phash,
                 chroma,
+                dhash,
                 bytes,
             })
         })
@@ -436,10 +456,10 @@ pub fn find_similar_between_with_progress(
             if !chroma_compatible(a.chroma, b.chroma) {
                 continue;
             }
-            let distance = distance(a.phash.hash, b.phash.hash);
-            if distance > SIMILAR_MAX_DISTANCE {
+            if !hashes_similar(a, b) {
                 continue;
             }
+            let distance = distance(a.phash.hash, b.phash.hash);
             let replace = match best {
                 None => true,
                 Some((current, current_distance)) => {

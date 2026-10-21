@@ -1259,10 +1259,6 @@ async fn compare_tables_have_their_own_filters_and_more_buttons() {
             "missing per-table filter for {suffix}"
         );
         assert!(
-            html.contains(&format!("id=\"compare-more-{suffix}\"")),
-            "missing more button for {suffix}"
-        );
-        assert!(
             html.contains(&format!("id=\"compare-count-{suffix}\"")),
             "missing count for {suffix}"
         );
@@ -1373,8 +1369,7 @@ async fn similar_tables_have_filters_and_embedded_rows() {
     let html = body_string(res.into_body()).await;
     assert!(html.contains("id=\"similar-rows-data\""), "{html}");
     assert!(html.contains("id=\"similar-filter-rows\""), "{html}");
-    assert!(html.contains("id=\"similar-more-rows\""), "{html}");
-    assert!(html.contains("id=\"similar-count-rows\""), "{html}");
+        assert!(html.contains("id=\"similar-count-rows\""), "{html}");
     assert!(html.contains("original.jpg") && html.contains("small.jpg"), "{html}");
 
     // Compare mode: an exact copy (duplicate) plus a downscale (similar).
@@ -1401,8 +1396,7 @@ async fn similar_tables_have_filters_and_embedded_rows() {
     let html = body_string(res.into_body()).await;
     assert!(html.contains("id=\"similar-matches-data\""), "{html}");
     assert!(html.contains("id=\"similar-filter-matches\""), "{html}");
-    assert!(html.contains("id=\"similar-more-matches\""), "{html}");
-    assert!(html.contains("id=\"similar-count-matches\""), "{html}");
+        assert!(html.contains("id=\"similar-count-matches\""), "{html}");
 }
 
 #[tokio::test]
@@ -1569,4 +1563,220 @@ async fn overlapping_two_tree_operations_are_rejected() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn thumb_endpoint_serves_small_jpegs() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+
+    let res = app()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/thumb?path={}", urlencode(&fixture.display().to_string())))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get("content-type").unwrap(),
+        "image/jpeg"
+    );
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    assert!(bytes.len() > 100, "thumbnail has content");
+    assert_eq!(&bytes[..2], &[0xFF, 0xD8], "JPEG magic");
+    let original = std::fs::metadata(&fixture).unwrap().len() as usize;
+    assert!(
+        bytes.len() < original / 10,
+        "thumbnail ({} bytes) should be far smaller than the original ({original})",
+        bytes.len()
+    );
+
+    // Missing files yield 404, never a crash.
+    let res = app()
+        .oneshot(
+            Request::builder()
+                .uri("/thumb?path=/definitely/not/here.jpg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn similar_tables_include_preview_and_size_delta_columns() {
+    let root = tempfile::tempdir().unwrap();
+    let tree = root.path().join("library");
+    std::fs::create_dir_all(&tree).unwrap();
+    let original = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+    std::fs::copy(&original, tree.join("original.jpg")).unwrap();
+    let rgb = image::open(&original).unwrap().to_rgb8();
+    image::imageops::resize(&rgb, 600, 800, image::imageops::FilterType::Lanczos3)
+        .save_with_format(tree.join("small.jpg"), image::ImageFormat::Jpeg)
+        .unwrap();
+
+    let res = app()
+        .oneshot(form_request(
+            "/similar/run",
+            format!("root={}", urlencode(&tree.display().to_string())),
+        ))
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("<th>Preview</th>"), "{html}");
+    assert!(html.contains("Size &Delta;"), "{html}");
+}
+
+#[tokio::test]
+async fn similar_decide_applies_keep_both_with_exif_destination() {
+    let root = tempfile::tempdir().unwrap();
+    let a_root = root.path().join("library");
+    let b_root = root.path().join("candidate");
+    let purgatory = root.path().join("purgatory");
+    std::fs::create_dir_all(&a_root).unwrap();
+    std::fs::create_dir_all(&b_root).unwrap();
+
+    let original = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+    let a_bigger = a_root.join("photo.jpg");
+    std::fs::write(&a_bigger, vec![1u8; 8192]).unwrap();
+    let b_smaller = b_root.join("photo.jpg");
+    std::fs::copy(&original, &b_smaller).unwrap();
+
+    let res = app()
+        .oneshot(form_request(
+            "/similar/decide",
+            format!(
+                "decisions={}&a_root={}&b_root={}&purgatory={}&format={}",
+                urlencode(&format!("{}\t{}\tkeep_both", a_bigger.display(), b_smaller.display())),
+                urlencode(&a_root.display().to_string()),
+                urlencode(&b_root.display().to_string()),
+                urlencode(&purgatory.display().to_string()),
+                urlencode("YYYY/MM-DD")
+            ),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("Decisions Applied"), "{html}");
+    assert!(html.contains("kept both"), "{html}");
+
+    // A untouched; B moved into A at its EXIF destination (2022-08-17).
+    assert!(a_bigger.exists());
+    assert!(!b_smaller.exists());
+    assert!(a_root.join("2022/08-17/photo.jpg").exists());
+}
+
+#[tokio::test]
+async fn similar_compare_page_offers_per_row_decisions() {
+    let root = tempfile::tempdir().unwrap();
+    let a_root = root.path().join("library");
+    let b_root = root.path().join("candidate");
+    std::fs::create_dir_all(&a_root).unwrap();
+    std::fs::create_dir_all(&b_root).unwrap();
+    let original = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+    std::fs::copy(&original, a_root.join("photo.jpg")).unwrap();
+    // B: a downscaled copy with the fixture's EXIF segment spliced in, so it
+    // is similar (not identical) AND carries a date for the destination.
+    let fixture = std::fs::read(&original).unwrap();
+    // Walk the segments to the real APP1 (EXIF); the first segment is APP0.
+    let mut offset = 2usize;
+    let app1 = loop {
+        assert_eq!(fixture[offset], 0xFF, "jpeg marker expected");
+        let marker = fixture[offset + 1];
+        let len = u16::from_be_bytes([fixture[offset + 2], fixture[offset + 3]]) as usize;
+        if marker == 0xE1 {
+            break &fixture[offset..offset + 2 + len];
+        }
+        offset += 2 + len;
+    };
+    let rgb = image::open(&original).unwrap().to_rgb8();
+    let small = image::imageops::resize(&rgb, 600, 800, image::imageops::FilterType::Lanczos3);
+    let mut scaled = Vec::new();
+    small
+        .write_to(&mut std::io::Cursor::new(&mut scaled), image::ImageFormat::Jpeg)
+        .unwrap();
+    let mut b_bytes = vec![0xFF, 0xD8];
+    b_bytes.extend_from_slice(app1);
+    b_bytes.extend_from_slice(&scaled[2..]);
+    std::fs::write(b_root.join("small.jpg"), b_bytes).unwrap();
+
+    let res = app()
+        .oneshot(form_request(
+            "/similar/run",
+            format!(
+                "root={}&compare={}",
+                urlencode(&a_root.display().to_string()),
+                urlencode(&b_root.display().to_string())
+            ),
+        ))
+        .await
+        .unwrap();
+    let html = body_string(res.into_body()).await;
+
+    assert!(html.contains("id=\"similar-decide-form\""), "{html}");
+    assert!(html.contains("<th>Use</th>"), "{html}");
+    assert!(html.contains("<th>Action</th>"), "{html}");
+    assert!(html.contains("Destination (EXIF of B)"), "{html}");
+    assert!(html.contains("similar-decide-format"), "{html}");
+    // The rows payload carries the B EXIF date for the destination preview.
+    let marker = "id=\"similar-matches-data\" type=\"application/json\">";
+    let start = html.find(marker).unwrap() + marker.len();
+    let end = start + html[start..].find("</script>").unwrap();
+    let payload = &html[start..end];
+    assert!(payload.contains("\"date\":\"2022-08-17"), "{payload}");
+}
+
+/// Static consistency: the resizable-table machinery exists and the table CSS
+/// keeps rows single-line (the squished-row complaint).
+#[test]
+fn resizable_table_machinery_is_wired() {
+    let js = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/compare.js"),
+    )
+    .unwrap();
+    assert!(js.contains("Tabulator"), "table library wired");
+    assert!(js.contains("resizableColumns: true"), "column resizing delegated");
+    assert!(js.contains("rowSelection"), "select-all header checkbox");
+    assert!(js.contains("paginationSize"), "pagination");
+    assert!(js.contains("persistenceID"), "column widths persisted");
+    assert!(js.contains("corner-resizer"), "corner handle wired");
+    assert!(js.contains("fullscreen-toggle"), "fullscreen button wired");
+    assert!(js.contains("fullscreen-exit"), "in-frame exit button");
+    assert!(js.contains("Escape"), "escape exits fullscreen");
+    assert!(js.contains("similar-similarity-rows"), "similarity slider wired (self)");
+    assert!(js.contains("similar-similarity-matches"), "similarity slider wired (compare)");
+    for id in ["similar-table-matches", "similar-table-rows", "compare-table-dups"] {
+        assert!(js.contains(id), "default widths for {id}");
+    }
+
+    let css = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("static/style.css"),
+    )
+    .unwrap();
+    assert!(css.contains(".tabulator"), "table theme overrides");
+    assert!(css.contains(".corner-resizer"), "corner handle styling");
+    assert!(css.contains(".table-frame.fullscreen"), "fullscreen styling");
+    assert!(css.contains(".similarity-slider"), "slider styling");
+    assert!(css.contains("text-overflow: ellipsis"), "long paths stay on one line");
+
+    // The library assets are vendored locally (served from /static/vendor).
+    let base = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/base.html"),
+    )
+    .unwrap();
+    assert!(base.contains("/static/vendor/tabulator.min.js"), "{base}");
+    assert!(base.contains("/static/vendor/tabulator.min.css"), "{base}");
+    assert!(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("static/vendor/tabulator.min.js")
+            .exists()
+    );
 }

@@ -1352,6 +1352,46 @@ pub fn move_to_purgatory_with_progress(
     outcome
 }
 
+/// Verified single-file move: copy to `dir` under a unique name, byte-check
+/// (size + full-file hash), and only then remove the source. Returns the
+/// final destination path. Never overwrites; collisions auto-rename.
+fn verified_move(
+    src: &Path,
+    dir: &Path,
+    taken: &mut HashMap<PathBuf, HashSet<String>>,
+) -> Result<PathBuf, String> {
+    use crate::image_reader::hash_all_bytes;
+
+    let meta = std::fs::metadata(src).map_err(|e| format!("source not readable: {e}"))?;
+    let source_hash = hash_all_bytes(src).map_err(|e| format!("source hash failed: {e}"))?;
+
+    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create folder: {e}"))?;
+    let names = taken
+        .entry(dir.to_path_buf())
+        .or_insert_with(|| existing_names(dir));
+    let unique = unique_name(&file_name(src), names);
+    names.insert(unique.to_lowercase());
+    let target = dir.join(unique);
+
+    if let Err(e) = std::fs::copy(src, &target) {
+        let _ = std::fs::remove_file(&target);
+        return Err(format!("copy failed: {e}"));
+    }
+    let dst_size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+    let verified = dst_size == meta.len()
+        && hash_all_bytes(&target).map(|h| h == source_hash).unwrap_or(false);
+    if !verified {
+        let _ = std::fs::remove_file(&target);
+        return Err("verification failed: destination bytes differ".into());
+    }
+    if let Err(e) = std::fs::remove_file(src) {
+        return Err(format!(
+            "copied and verified, but source removal failed (both copies exist): {e}"
+        ));
+    }
+    Ok(target)
+}
+
 /// Remove directories under `dir` that are empty, bottom-up. `dir` itself is
 /// never removed (only its descendants).
 fn prune_empty_children(dir: &Path) {
@@ -1530,8 +1570,6 @@ pub fn swap_better_copies_with_progress(
     purgatory_root: &Path,
     progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> SwapOutcome {
-    use crate::image_reader::hash_all_bytes;
-
     let mut outcome = SwapOutcome {
         planned: swaps.len(),
         swapped: 0,
@@ -1540,44 +1578,6 @@ pub fn swap_better_copies_with_progress(
     };
     let total = swaps.len() * 2;
     let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
-
-    // Verified single-file move: copy to `dir` (unique name), byte-check, and
-    // only then remove the source. Returns the final destination path.
-    fn safe_move(
-        src: &Path,
-        dir: &Path,
-        taken: &mut HashMap<PathBuf, HashSet<String>>,
-        hash_all_bytes: fn(&Path) -> Result<u64, crate::image_reader::ImageReaderError>,
-    ) -> Result<PathBuf, String> {
-        let meta = std::fs::metadata(src).map_err(|e| format!("source not readable: {e}"))?;
-        let source_hash = hash_all_bytes(src).map_err(|e| format!("source hash failed: {e}"))?;
-
-        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create folder: {e}"))?;
-        let names = taken
-            .entry(dir.to_path_buf())
-            .or_insert_with(|| existing_names(dir));
-        let unique = unique_name(&file_name(src), names);
-        names.insert(unique.to_lowercase());
-        let target = dir.join(unique);
-
-        if let Err(e) = std::fs::copy(src, &target) {
-            let _ = std::fs::remove_file(&target);
-            return Err(format!("copy failed: {e}"));
-        }
-        let dst_size = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
-        let verified = dst_size == meta.len()
-            && hash_all_bytes(&target).map(|h| h == source_hash).unwrap_or(false);
-        if !verified {
-            let _ = std::fs::remove_file(&target);
-            return Err("verification failed: destination bytes differ".into());
-        }
-        if let Err(e) = std::fs::remove_file(src) {
-            return Err(format!(
-                "copied and verified, but source removal failed (both copies exist): {e}"
-            ));
-        }
-        Ok(target)
-    }
 
     // Phase 1: purge the worse A copies to purgatory (B = the A-tree root for
     // relative structure).
@@ -1589,7 +1589,7 @@ pub fn swap_better_copies_with_progress(
             .ok()
             .and_then(|rel| purgatory_root.join(rel).parent().map(|p| p.to_path_buf()))
             .unwrap_or_else(|| purgatory_root.to_path_buf());
-        match safe_move(a_worse, &dir, &mut taken, hash_all_bytes) {
+        match verified_move(a_worse, &dir, &mut taken) {
             Ok(_) => {
                 purge_ok[i] = true;
                 outcome.purged += 1;
@@ -1610,7 +1610,7 @@ pub fn swap_better_copies_with_progress(
                 .push((b_better.clone(), "A path has no parent directory".into()));
             continue;
         };
-        match safe_move(b_better, &dir, &mut taken, hash_all_bytes) {
+        match verified_move(b_better, &dir, &mut taken) {
             Ok(_) => outcome.swapped += 1,
             Err(e) => outcome.failures.push((
                 b_better.clone(),
@@ -1731,6 +1731,133 @@ pub fn transfer_files_with_progress(
         if unique != file_name(path) {
             outcome.renamed_on_collision += 1;
         }
+    }
+
+    outcome
+}
+
+/// What to do with one similar pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimilarDecision {
+    /// Keep both: B is renamed-in via unique naming and moved into A at its
+    /// EXIF-date destination (format + A root); A stays where it is.
+    KeepBoth,
+    /// Keep neither in place: both copies move to purgatory.
+    PurgatoryBoth,
+    /// Apply the suggestion: the bigger copy stays in A. If B is bigger the
+    /// pair is swapped (A -> purgatory, B -> the vacated A path); otherwise
+    /// B goes to purgatory.
+    TakeBigger,
+}
+
+#[derive(Debug)]
+pub struct DecisionOutcome {
+    pub planned: usize,
+    pub kept_both: usize,
+    pub purged_both: usize,
+    pub bigger_taken: usize,
+    pub failures: Vec<(PathBuf, String)>,
+}
+
+/// Execute per-row decisions from the similar table. Every file move is a
+/// verified copy -> remove; failures leave both copies where they are.
+pub fn apply_similar_decisions_with_progress(
+    decisions: &[(PathBuf, PathBuf, SimilarDecision)],
+    a_root: &Path,
+    b_root: &Path,
+    purgatory_root: &Path,
+    format: &str,
+    progress: &(dyn Fn(usize, usize) + Send + Sync),
+) -> DecisionOutcome {
+    let mut outcome = DecisionOutcome {
+        planned: decisions.len(),
+        kept_both: 0,
+        purged_both: 0,
+        bigger_taken: 0,
+        failures: Vec::new(),
+    };
+    let mut taken: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+    let total = decisions.len();
+
+    for (i, (a_path, b_path, decision)) in decisions.iter().enumerate() {
+        progress(i + 1, total);
+
+        let purgatory_for = |path: &Path, root: &Path| -> PathBuf {
+            path.strip_prefix(root)
+                .ok()
+                .and_then(|rel| purgatory_root.join(rel).parent().map(|p| p.to_path_buf()))
+                .unwrap_or_else(|| purgatory_root.to_path_buf())
+        };
+
+        match decision {
+            SimilarDecision::KeepBoth => {
+                let date = crate::exif::creation_date(b_path);
+                let Some(destination) = destination_for(b_path, &date, a_root, format) else {
+                    outcome.failures.push((
+                        b_path.clone(),
+                        "no EXIF date: cannot compute a destination for the kept copy".into(),
+                    ));
+                    continue;
+                };
+                let dir = destination
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| a_root.to_path_buf());
+                match verified_move(b_path, &dir, &mut taken) {
+                    Ok(_) => outcome.kept_both += 1,
+                    Err(e) => outcome.failures.push((b_path.clone(), e)),
+                }
+            }
+            SimilarDecision::PurgatoryBoth => {
+                let mut ok = true;
+                match verified_move(a_path, &purgatory_for(a_path, a_root), &mut taken) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        outcome.failures.push((a_path.clone(), e));
+                        ok = false;
+                    }
+                }
+                if ok {
+                    match verified_move(b_path, &purgatory_for(b_path, b_root), &mut taken) {
+                        Ok(_) => outcome.purged_both += 1,
+                        Err(e) => outcome.failures.push((b_path.clone(), e)),
+                    }
+                }
+            }
+            SimilarDecision::TakeBigger => {
+                let size_a = std::fs::metadata(a_path).map(|m| m.len()).unwrap_or(0);
+                let size_b = std::fs::metadata(b_path).map(|m| m.len()).unwrap_or(0);
+                if size_b > size_a {
+                    // Swap: A (smaller) to purgatory, then B into its place.
+                    match verified_move(a_path, &purgatory_for(a_path, a_root), &mut taken) {
+                        Ok(_) => {
+                            let dir = a_path
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_else(|| a_root.to_path_buf());
+                            match verified_move(b_path, &dir, &mut taken) {
+                                Ok(_) => outcome.bigger_taken += 1,
+                                Err(e) => outcome.failures.push((
+                                    b_path.clone(),
+                                    format!("{e} (the smaller A copy is safe in purgatory)"),
+                                )),
+                            }
+                        }
+                        Err(e) => outcome.failures.push((a_path.clone(), e)),
+                    }
+                } else {
+                    // A already holds the bigger copy: B goes to purgatory.
+                    match verified_move(b_path, &purgatory_for(b_path, b_root), &mut taken) {
+                        Ok(_) => outcome.bigger_taken += 1,
+                        Err(e) => outcome.failures.push((b_path.clone(), e)),
+                    }
+                }
+            }
+        }
+    }
+
+    for root in [a_root, b_root] {
+        prune_empty_children(root);
     }
 
     outcome

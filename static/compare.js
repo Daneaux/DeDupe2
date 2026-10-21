@@ -48,7 +48,9 @@
       // Result pages that embed JSON payloads render client-side.
       if (document.getElementById("verify-mismatches-data")) renderVerify();
       if (document.getElementById("compare-a-data")) initCompareTables();
-      if (window.__initSimilarTables) window.__initSimilarTables();
+      if (document.getElementById("similar-rows-data") || document.getElementById("similar-matches-data")) {
+        initSimilarTables();
+      }
       // The scan just fed the cache — update the path-field hints.
       if (window.refreshCacheHints) window.refreshCacheHints();
     } else if (event === "error") {
@@ -70,12 +72,16 @@
     const form = e.target;
     let url = null;
     if (form.matches("form[data-table]")) {
-      const controller = window.__compareControllers
-        ? window.__compareControllers[form.dataset.table]
-        : null;
-      const files = controller ? controller.matchingPaths() : [];
+      const table =
+        window.__tables && window.__tables["compare-table-" + form.dataset.table];
+      const files = table
+        ? table.getRows("active").map((row) => row.getData().path)
+        : [];
       if (files.length === 0) {
         e.preventDefault();
+        text.textContent = "Error: no rows match this table's filter.";
+        text.classList.add("error");
+        progress.hidden = false;
         return;
       }
       const hidden = form.querySelector('input[name="files"]');
@@ -126,6 +132,28 @@
       const against = fieldValue(form, "compare");
       phaseLabel = "Finding similar in " + shortPath(fieldValue(form, "root")) +
         (against.trim() ? " vs " + shortPath(against) : "");
+    } else if (form.id === "similar-decide-form") {
+      const table = window.__tables && window.__tables["similar-table-matches"];
+      const rows = table ? table.getSelectedRows() : [];
+      const visible = table ? table.getRows("active").length : 0;
+      if (rows.length === 0) {
+        e.preventDefault();
+        text.textContent =
+          visible === 0
+            ? "Error: no rows match the current filter."
+            : "Error: tick at least one row (Use column) first.";
+        text.classList.add("error");
+        progress.hidden = false;
+        return;
+      }
+      const lines = rows.map((row) => {
+        const data = row.getData();
+        return data.a + "\t" + data.b + "\t" + (data.action || "take_bigger");
+      });
+      const hidden = form.querySelector('input[name="decisions"]');
+      if (hidden) hidden.value = lines.join("\n");
+      url = "/similar/decide";
+      phaseLabel = "Applying " + rows.length + " decision(s)";
     } else if (form.id === "similar-swap-form") {
       url = "/similar/swap";
       phaseLabel = "Swapping better copies into " + shortPath(fieldValue(form, "a_root"));
@@ -428,174 +456,15 @@ document.addEventListener("change", function (e) {
   setTimeout(refreshAll, 600);
 })();
 
-// --- Cached-tree hints ------------------------------------------------------
-// Path fields with [data-cache-status] get a live hint saying what that tree
-// already has cached, layer by layer (green = cached, red = not yet).
-(function () {
-  const spans = new WeakMap();
-  const n = (v) => Number(v || 0).toLocaleString();
 
-  function layer(name, value, total) {
-    const cls = value > 0 ? "cache-on" : "cache-off";
-    return name + ' <span class="' + cls + '">' + n(value) + "</span>";
-  }
-
-  function update(el) {
-    let span = spans.get(el);
-    if (!span) {
-      span = document.createElement("span");
-      span.className = "hint cache-hint";
-      el.insertAdjacentElement("afterend", span);
-      spans.set(el, span);
-    }
-    const path = el.value.trim();
-    if (!path) {
-      span.textContent = "";
-      return;
-    }
-    fetch("/cache-status?path=" + encodeURIComponent(path))
-      .then((r) => r.json())
-      .then((j) => {
-        if (j.cached_files > 0) {
-          span.innerHTML =
-            "cached: " + n(j.cached_files) + " file(s) · " +
-            layer("shallow", j.shallow) + " · " +
-            layer("deep", j.deep) + " · " +
-            layer("phash", j.phash) + " · " +
-            layer("exif", j.exif);
-        } else {
-          span.innerHTML = 'not cached <span class="cache-off">0</span>';
-        }
-      })
-      .catch(function () {});
-  }
-
-  let timer = null;
-  document.addEventListener("input", function (e) {
-    const el = e.target && e.target.closest && e.target.closest("[data-cache-status]");
-    if (!el) return;
-    clearTimeout(timer);
-    timer = setTimeout(() => update(el), 300);
-  });
-
-  function refreshAll() {
-    document.querySelectorAll("[data-cache-status]").forEach((el) => {
-      if (el.value.trim()) update(el);
-    });
-  }
-  // Scans feed the cache, so refresh whenever one finishes (or fails partway).
-  window.refreshCacheHints = refreshAll;
-  refreshAll();
-  // fields.js restores remembered values after this script runs.
-  setTimeout(refreshAll, 600);
-})();
-
-// --- Compare results: full-set filtering ------------------------------------
-// The compare page embeds the FULL result sets as JSON so this filter searches
-// everything (including rows that don't fit on screen).
-(function () {
-  const RENDER_CAP = 500;
-  const payload = (id) => {
-    const el = document.getElementById(id);
-    if (!el) return null;
-    try {
-      return JSON.parse(el.textContent || "[]");
-    } catch (e) {
-      return null;
-    }
-  };
-  const aData = payload("compare-a-data");
-  const bData = payload("compare-b-data");
-  const dupData = payload("compare-dup-data");
-  const unreadData = payload("compare-unreadable-data");
-  if (!aData && !bData && !dupData && !unreadData) return;
-  const filterEl = document.getElementById("compare-filter");
-  const countEl = document.getElementById("compare-filter-count");
-
-  function pathRow(cls, path) {
-    const tr = document.createElement("tr");
-    tr.className = cls;
-    const td = document.createElement("td");
-    td.className = "path clickable";
-    td.dataset.reveal = path;
-    td.textContent = path;
-    tr.appendChild(td);
-    return tr;
-  }
-
-  function dupRow(entry) {
-    const tr = document.createElement("tr");
-    tr.className = entry.tree === "A" ? "row-a" : "row-b";
-    const badge = document.createElement("td");
-    const span = document.createElement("span");
-    span.className = "badge " + (entry.tree === "A" ? "badge-ok" : "badge-dirty");
-    span.textContent = entry.tree;
-    badge.appendChild(span);
-    tr.appendChild(badge);
-    const td = document.createElement("td");
-    td.className = "path clickable";
-    td.dataset.reveal = entry.path;
-    td.textContent = entry.path;
-    tr.appendChild(td);
-    return tr;
-  }
-
-  function fill(tbodyId, rows, build) {
-    const tbody = document.getElementById(tbodyId);
-    if (!tbody || !rows) return 0;
-    const q = (filterEl && filterEl.value ? filterEl.value : "").trim().toLowerCase();
-    const matching = rows.filter((r) => {
-      const p = typeof r === "string" ? r : r.path;
-      return !q || String(p).toLowerCase().includes(q);
-    });
-    tbody.innerHTML = "";
-    for (const r of matching.slice(0, RENDER_CAP)) {
-      tbody.appendChild(build(r));
-    }
-    if (matching.length > RENDER_CAP) {
-      const tr = document.createElement("tr");
-      tr.className = "more-row";
-      const td = document.createElement("td");
-      td.className = "muted";
-      td.textContent = "… " + (matching.length - RENDER_CAP) + " more match — refine the filter";
-      tr.appendChild(td);
-      tbody.appendChild(tr);
-    }
-    if (matching.length === 0) {
-      const tr = document.createElement("tr");
-      const td = document.createElement("td");
-      td.className = "muted";
-      td.textContent = q ? "No rows match the filter." : "None.";
-      tr.appendChild(td);
-      tbody.appendChild(tr);
-    }
-    return matching.length;
-  }
-
-  function render() {
-    const aCount = fill("compare-table-a", aData, (p) => pathRow("row-a", p));
-    const dupCount = fill("compare-table-dups", dupData, dupRow);
-    const bCount = fill("compare-table-b", bData, (p) => pathRow("row-b", p));
-    const unCount = fill("compare-table-unreadable", unreadData, (p) => pathRow("row-b", p));
-    if (countEl) {
-      const q = (filterEl && filterEl.value ? filterEl.value : "").trim();
-      countEl.textContent =
-        (q ? 'matching "' + q + '": ' : "totals: ") +
-        aCount + " in A · " + dupCount + " duplicate row(s) · " +
-        bCount + " only in B · " + unCount + " unreadable";
-    }
-  }
-
-  if (filterEl) filterEl.addEventListener("input", render);
-  render();
-})();
-
-// --- Compare results: per-table filters with "more…" -----------------------
-// The compare page embeds its FULL result sets as JSON; each table gets its
-// own filter box and pages in more rows on demand.
+// --- Result tables (Tabulator) ---------------------------------------------
+// The compare/similar result tables embed their full data as JSON; Tabulator
+// handles column resizing (visible, aligned handles), select-all checkboxes,
+// pagination, and width persistence.
 let initCompareTables = function () {};
+let initSimilarTables = function () {};
 (function () {
-  const PAGE = 200;
+  const tables = (window.__tables = window.__tables || {});
 
   const payload = (id) => {
     const el = document.getElementById(id);
@@ -607,123 +476,243 @@ let initCompareTables = function () {};
     }
   };
 
-  function pathRow(cls, path) {
-    const tr = document.createElement("tr");
-    tr.className = cls;
-    const td = document.createElement("td");
-    td.className = "path clickable";
-    td.dataset.reveal = path;
-    td.textContent = path;
-    tr.appendChild(td);
-    return tr;
+  function makeHost(id) {
+    const tbody = document.getElementById(id);
+    if (!tbody) return null;
+    const legacy = tbody.closest("table");
+    const div = document.createElement("div");
+    div.id = id;
+    div.className = "tabulator-host";
+    legacy.replaceWith(div);
+    return div;
   }
 
-  function dupRow(entry) {
-    const tr = document.createElement("tr");
-    tr.className = entry.tree === "A" ? "row-a" : "row-b";
-    const badgeTd = document.createElement("td");
+  function pathFormatter(cell) {
     const span = document.createElement("span");
-    span.className = "badge " + (entry.tree === "A" ? "badge-ok" : "badge-dirty");
-    span.textContent = entry.tree;
-    badgeTd.appendChild(span);
-    tr.appendChild(badgeTd);
-    const td = document.createElement("td");
-    td.className = "path clickable";
-    td.dataset.reveal = entry.path;
-    td.textContent = entry.path;
-    tr.appendChild(td);
-    return tr;
+    span.className = "path clickable";
+    const value = cell.getValue() || "";
+    span.dataset.reveal = value;
+    span.title = value;
+    span.textContent = value;
+    return span;
   }
 
-  const controllers = {};
-
-  function cell(text, className) {
-    const td = document.createElement("td");
-    if (className) td.className = className;
-    td.textContent = text;
-    return td;
-  }
-
-  function revealCell(text) {
-    const td = document.createElement("td");
-    td.className = "path clickable";
-    td.dataset.reveal = text;
-    td.textContent = text;
-    return td;
-  }
-
-  function badgeCell(text, removable) {
-    const td = document.createElement("td");
+  function badgeFormatter(cell) {
     const span = document.createElement("span");
-    span.className = "badge " + (removable ? "badge-dirty" : "badge-ok");
-    span.textContent = text;
-    td.appendChild(span);
-    return td;
+    const data = cell.getData();
+    span.className = "badge " + (data.removable ? "badge-dirty" : "badge-ok");
+    span.textContent = cell.getValue() || "";
+    return span;
   }
 
-  function controller(cfg) {
-    const tbody = document.getElementById(cfg.tbody);
-    const filter = document.getElementById(cfg.filter);
-    const count = document.getElementById(cfg.count);
-    const more = document.getElementById(cfg.more);
-    if (!tbody || !cfg.rows) return;
-    let shown = 0;
-    let matching = [];
+  function previewFormatter(cell) {
+    const data = cell.getData();
+    const paths = "a" in data ? [data.a, data.b] : [data.keeper, data.candidate];
+    // Tabulator re-runs formatters when it restores a persisted column
+    // layout; drop any previous preview block so the cell never accumulates
+    // duplicates (this caused 4 images per cell).
+    const cellEl = cell.getElement();
+    if (cellEl) {
+      cellEl.querySelectorAll(".previews").forEach((node) => node.remove());
+    }
+    const div = document.createElement("div");
+    div.className = "previews";
+    for (const path of paths) {
+      const img = document.createElement("img");
+      img.className = "thumb";
+      img.loading = "lazy";
+      img.alt = "";
+      img.title = path;
+      img.src = "/thumb?path=" + encodeURIComponent(path);
+      img.addEventListener("error", () => img.remove());
+      div.appendChild(img);
+    }
+    return div;
+  }
 
-    function matchingRows() {
+  function bytesFmt(n) {
+    if (n === undefined || n === null) return "?";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let v = Number(n);
+    let u = 0;
+    while (v >= 1024 && u < units.length - 1) {
+      v /= 1024;
+      u += 1;
+    }
+    return (u === 0 ? v : v.toFixed(1)) + " " + units[u];
+  }
+
+  function deltaText(copyBytes, keepBytes) {
+    if (!keepBytes || copyBytes === undefined || copyBytes === null) return "?";
+    const diff = copyBytes - keepBytes;
+    const pct = Math.round((diff / keepBytes) * 100);
+    const sign = diff > 0 ? "+" : "−";
+    return sign + Math.abs(pct) + "% (" + sign + bytesFmt(Math.abs(diff)) + ")";
+  }
+
+  function deltaFormatter(cell) {
+    const data = cell.getData();
+    const copy = "b_bytes" in data ? data.b_bytes : data.candidate_bytes;
+    const keep = "a_bytes" in data ? data.a_bytes : data.keeper_bytes;
+    return deltaText(copy, keep);
+  }
+
+  function actionFormatter(cell) {
+    const select = document.createElement("select");
+    select.className = "row-action";
+    for (const [value, label] of [
+      ["take_bigger", "3 · take bigger (suggested)"],
+      ["keep_both", "1 · keep both (move B into A)"],
+      ["purgatory_both", "2 · keep neither (both → purgatory)"],
+    ]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.appendChild(option);
+    }
+    select.value = cell.getValue() || "take_bigger";
+    select.addEventListener("change", () => {
+      cell.getRow().update({ action: select.value });
+    });
+    return select;
+  }
+
+  function destinationFormatter(cell) {
+    const data = cell.getData();
+    const formatInput = document.getElementById("similar-decide-format");
+    const rootInput = document.querySelector(
+      '#similar-decide-form input[name="a_root"]'
+    );
+    const computed = computeDestination(
+      data.b || "",
+      data.date || "unknown",
+      formatInput ? formatInput.value : "YYYY/MM-DD <folder description>",
+      rootInput ? rootInput.value : ""
+    );
+    const span = document.createElement("span");
+    span.className = computed ? "path" : "muted";
+    span.textContent = computed || "no EXIF date";
+    return span;
+  }
+
+  const PATH_FIELDS = ["path", "keeper", "candidate", "a", "b"];
+
+  function makeTable(spec) {
+    const host = makeHost(spec.id);
+    if (!host) return null;
+    const table = new Tabulator(host, {
+      data: spec.rows,
+      columns: spec.columns,
+      layout: "fitDataFill",
+      height: "65vh",
+      resizableColumns: true,
+      selectableRows: spec.selectable ? true : false,
+      pagination: true,
+      paginationSize: 200,
+      paginationSizeSelector: [100, 200, 500, 1000],
+      persistence: { columns: ["width"] },
+      persistenceID: "dedupe2.tab." + spec.id,
+      placeholder: "none",
+    });
+    tables[spec.id] = table;
+
+    // Text filter + similarity slider (both optional).
+    const filter = spec.filter ? document.getElementById(spec.filter) : null;
+    const slider = spec.slider ? document.getElementById(spec.slider) : null;
+    const count = spec.count ? document.getElementById(spec.count) : null;
+    const apply = () => {
       const q = (filter && filter.value ? filter.value : "").trim().toLowerCase();
-      return cfg.rows.filter((r) => {
-        const p = typeof r === "string" ? r : r.path;
-        return !q || String(p).toLowerCase().includes(q);
+      const limit = slider ? Number(slider.value) : Infinity;
+      table.setFilter((data) => {
+        if (q) {
+          const hit = PATH_FIELDS.some((field) =>
+            String(data[field] || "").toLowerCase().includes(q)
+          );
+          if (!hit) return false;
+        }
+        if (typeof data.distance === "number" && data.distance > limit) return false;
+        return true;
       });
-    }
-
-    function updateCount() {
-      if (!count) return;
-      const q = (filter && filter.value ? filter.value : "").trim();
-      count.textContent =
-        matching.length === 0
-          ? q
-            ? "no matches"
-            : "none"
-          : "showing " + Math.min(shown, matching.length) + " of " + matching.length +
-            (q ? " match" : "") + " (" + cfg.rows.length + " total)";
-    }
-
-    function appendPage() {
-      const next = matching.slice(shown, shown + PAGE);
-      for (const r of next) tbody.appendChild(cfg.build(r));
-      shown += next.length;
-      if (more) more.hidden = shown >= matching.length;
-      updateCount();
-    }
-
-    function reset() {
-      matching = matchingRows();
-      shown = 0;
-      tbody.innerHTML = "";
-      if (matching.length === 0) {
-        const tr = document.createElement("tr");
-        const td = document.createElement("td");
-        td.className = "muted";
-        td.textContent = (filter && filter.value ? "No rows match the filter." : "None.");
-        tr.appendChild(td);
-        tbody.appendChild(tr);
-        if (more) more.hidden = true;
-        updateCount();
-        return;
-      }
-      appendPage();
-    }
-
-    if (filter) filter.addEventListener("input", reset);
-    if (more) more.addEventListener("click", appendPage);
-    reset();
-
-    controllers[cfg.name] = {
-      matchingPaths: () => matching.map((r) => (typeof r === "string" ? r : r.path)),
     };
-    window.__compareControllers = controllers;
+    if (filter) filter.addEventListener("input", apply);
+    if (slider) {
+      const label = document.getElementById(spec.slider + "-value");
+      const sync = () => {
+        if (label) label.textContent = slider.value;
+      };
+      slider.addEventListener("input", () => {
+        sync();
+        apply();
+      });
+      sync();
+    }
+    table.on("dataFiltered", (filters, rows) => {
+      if (count) count.textContent = "showing " + rows.length + " row(s)";
+    });
+
+    // Frame: corner resize + fullscreen with Escape and an in-frame exit.
+    // It replaces the legacy .table-scroll so there are no nested scrollers
+    // (Tabulator scrolls internally).
+    const frame = document.createElement("div");
+    frame.className = "table-frame";
+    const legacyScroller = host.closest(".table-scroll") || host;
+    legacyScroller.replaceWith(frame);
+    frame.appendChild(host);
+
+    const corner = document.createElement("div");
+    corner.className = "corner-resizer";
+    corner.title = "Drag to resize the table area";
+    frame.appendChild(corner);
+    corner.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startWidth = frame.getBoundingClientRect().width;
+      const startHeight = host.getBoundingClientRect().height;
+      const onMove = (move) => {
+        frame.style.width = Math.max(320, startWidth + (move.clientX - startX)) + "px";
+        host.style.height = Math.max(160, startHeight + (move.clientY - startY)) + "px";
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        table.redraw();
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    });
+
+    const tools = frame.previousElementSibling;
+    const hostTools = tools && tools.classList.contains("table-tools") ? tools : null;
+    if (hostTools && !hostTools.querySelector(".fullscreen-toggle")) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn btn-small btn-secondary fullscreen-toggle";
+      button.textContent = "⛶ Full screen";
+      const exit = document.createElement("button");
+      exit.type = "button";
+      exit.className = "btn btn-small btn-secondary fullscreen-exit";
+      exit.textContent = "⤡ Exit full screen";
+      exit.hidden = true;
+      frame.appendChild(exit);
+      const setFullscreen = (on) => {
+        frame.classList.toggle("fullscreen", on);
+        button.textContent = on ? "⤡ Exit full screen" : "⛶ Full screen";
+        exit.hidden = !on;
+        setTimeout(() => table.redraw(), 30);
+      };
+      button.addEventListener("click", () =>
+        setFullscreen(!frame.classList.contains("fullscreen"))
+      );
+      exit.addEventListener("click", () => setFullscreen(false));
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && frame.classList.contains("fullscreen")) {
+          setFullscreen(false);
+        }
+      });
+      hostTools.appendChild(button);
+    }
+    return table;
   }
 
   initCompareTables = function () {
@@ -732,121 +721,130 @@ let initCompareTables = function () {};
     const dup = payload("compare-dup-data");
     const unread = payload("compare-unreadable-data");
     if (!a && !b && !dup && !unread) return;
-    controller({
-      name: "a",
-      tbody: "compare-table-a",
-      filter: "compare-filter-a",
-      count: "compare-count-a",
-      more: "compare-more-a",
-      rows: a || [],
-      build: (p) => pathRow("row-a", p),
-    });
-    controller({
-      name: "dups",
-      tbody: "compare-table-dups",
-      filter: "compare-filter-dups",
-      count: "compare-count-dups",
-      more: "compare-more-dups",
-      rows: dup || [],
-      build: dupRow,
-    });
-    controller({
-      name: "b",
-      tbody: "compare-table-b",
-      filter: "compare-filter-b",
-      count: "compare-count-b",
-      more: "compare-more-b",
-      rows: b || [],
-      build: (p) => pathRow("row-b", p),
-    });
-    controller({
-      name: "unreadable",
-      tbody: "compare-table-unreadable",
-      filter: "compare-filter-unreadable",
-      count: "compare-count-unreadable",
-      more: "compare-more-unreadable",
-      rows: unread || [],
-      build: (p) => pathRow("row-b", p),
-    });
+    const pathColumn = (title) => [
+      { title, field: "path", minWidth: 260, formatter: pathFormatter },
+    ];
+    if (a) {
+      makeTable({
+        id: "compare-table-a",
+        columns: pathColumn("Path"),
+        rows: a.map((path) => ({ path })),
+        filter: "compare-filter-a",
+        count: "compare-count-a",
+      });
+    }
+    if (dup) {
+      makeTable({
+        id: "compare-table-dups",
+        columns: [
+          { title: "Tree", field: "tree", width: 70, hozAlign: "center" },
+          { title: "Path", field: "path", minWidth: 260, formatter: pathFormatter },
+        ],
+        rows: dup,
+        filter: "compare-filter-dups",
+        count: "compare-count-dups",
+      });
+    }
+    if (b) {
+      makeTable({
+        id: "compare-table-b",
+        columns: pathColumn("Path"),
+        rows: b.map((path) => ({ path })),
+        filter: "compare-filter-b",
+        count: "compare-count-b",
+      });
+    }
+    if (unread) {
+      makeTable({
+        id: "compare-table-unreadable",
+        columns: pathColumn("Path"),
+        rows: unread.map((path) => ({ path })),
+        filter: "compare-filter-unreadable",
+        count: "compare-count-unreadable",
+      });
+    }
   };
 
-  // --- Similar tab tables -------------------------------------------------
-  function similarGroupRow(r) {
-    const tr = document.createElement("tr");
-    tr.appendChild(revealCell(r.keeper));
-    tr.appendChild(revealCell(r.candidate));
-    tr.appendChild(badgeCell("remove", true));
-    tr.appendChild(cell(r.distance));
-    tr.appendChild(cell(r.keeper_pixels));
-    tr.appendChild(cell(r.candidate_pixels));
-    tr.appendChild(cell(r.keeper_bytes));
-    tr.appendChild(cell(r.candidate_bytes));
-    return tr;
-  }
-
-  function similarMatchRow(r) {
-    const tr = document.createElement("tr");
-    tr.appendChild(revealCell(r.a));
-    tr.appendChild(revealCell(r.b));
-    tr.appendChild(badgeCell(r.verdict, r.removable));
-    tr.appendChild(cell(r.distance));
-    tr.appendChild(cell(r.a_pixels));
-    tr.appendChild(cell(r.b_pixels));
-    tr.appendChild(cell(r.a_bytes));
-    tr.appendChild(cell(r.b_bytes));
-    return tr;
-  }
-
-  let initSimilarTables = function () {};
-  function similarDupRow(r) {
-    const tr = document.createElement("tr");
-    tr.appendChild(revealCell(r.keeper));
-    tr.appendChild(revealCell(r.path));
-    return tr;
-  }
-
   initSimilarTables = function () {
+    const dups = payload("similar-dups-data");
     const groups = payload("similar-rows-data");
     const matches = payload("similar-matches-data");
-    const dups = payload("similar-dups-data");
-    if (!groups && !matches && !dups) return;
+    if (!dups && !groups && !matches) return;
     if (dups) {
-      controller({
-        name: "similar-dups",
-        tbody: "similar-table-dups",
+      makeTable({
+        id: "similar-table-dups",
+        columns: [
+          { title: "Keep (biggest file)", field: "keeper", minWidth: 220, formatter: pathFormatter },
+          { title: "Exact copy", field: "path", minWidth: 220, formatter: pathFormatter },
+        ],
+        rows: dups,
         filter: "similar-filter-dups",
         count: "similar-count-dups",
-        more: "similar-more-dups",
-        rows: dups,
-        build: similarDupRow,
       });
     }
     if (groups) {
-      controller({
-        name: "similar-rows",
-        tbody: "similar-table-rows",
+      makeTable({
+        id: "similar-table-rows",
+        columns: [
+          { title: "Preview", field: "preview", width: 440, headerSort: false, formatter: previewFormatter },
+          { title: "Keep (biggest file)", field: "keeper", minWidth: 220, formatter: pathFormatter },
+          { title: "Copy", field: "candidate", minWidth: 220, formatter: pathFormatter },
+          { title: "Verdict", field: "keeper", width: 90, headerSort: false, formatter: () => {
+            const span = document.createElement("span");
+            span.className = "badge badge-dirty";
+            span.textContent = "remove";
+            return span;
+          } },
+          { title: "Distance", field: "distance", width: 90, hozAlign: "right" },
+          { title: "Keep px", field: "keeper_pixels", width: 90, hozAlign: "right" },
+          { title: "Copy px", field: "candidate_pixels", width: 90, hozAlign: "right" },
+          { title: "Keep size", field: "keeper_bytes", width: 100, hozAlign: "right", formatter: (c) => bytesFmt(c.getValue()) },
+          { title: "Copy size", field: "candidate_bytes", width: 100, hozAlign: "right", formatter: (c) => bytesFmt(c.getValue()) },
+          { title: "Size Δ", field: "candidate_bytes", width: 140, hozAlign: "right", formatter: deltaFormatter },
+        ],
+        rows: groups,
         filter: "similar-filter-rows",
         count: "similar-count-rows",
-        more: "similar-more-rows",
-        rows: groups,
-        build: similarGroupRow,
+        slider: "similar-similarity-rows",
       });
     }
     if (matches) {
-      controller({
-        name: "similar-matches",
-        tbody: "similar-table-matches",
+      makeTable({
+        id: "similar-table-matches",
+        selectable: true,
+        columns: [
+          { title: "", field: "use", width: 44, hozAlign: "center", headerSort: false, formatter: "rowSelection", titleFormatter: "rowSelection" },
+          { title: "Preview", field: "preview", width: 440, headerSort: false, formatter: previewFormatter },
+          { title: "A (kept when bigger)", field: "a", minWidth: 220, formatter: pathFormatter },
+          { title: "B", field: "b", minWidth: 220, formatter: pathFormatter },
+          { title: "Verdict", field: "verdict", minWidth: 180, formatter: badgeFormatter },
+          { title: "Action", field: "action", width: 220, headerSort: false, formatter: actionFormatter },
+          { title: "Destination (EXIF of B)", field: "destination", minWidth: 220, headerSort: false, formatter: destinationFormatter },
+          { title: "Distance", field: "distance", width: 90, hozAlign: "right" },
+          { title: "A px", field: "a_pixels", width: 90, hozAlign: "right" },
+          { title: "B px", field: "b_pixels", width: 90, hozAlign: "right" },
+          { title: "A size", field: "a_bytes", width: 100, hozAlign: "right", formatter: (c) => bytesFmt(c.getValue()) },
+          { title: "B size", field: "b_bytes", width: 100, hozAlign: "right", formatter: (c) => bytesFmt(c.getValue()) },
+          { title: "Size Δ", field: "b_bytes", width: 140, hozAlign: "right", formatter: deltaFormatter },
+        ],
+        rows: matches.map((row) => ({ ...row, action: "take_bigger" })),
         filter: "similar-filter-matches",
         count: "similar-count-matches",
-        more: "similar-more-matches",
-        rows: matches,
-        build: similarMatchRow,
+        slider: "similar-similarity-matches",
       });
     }
   };
 
-  window.__initSimilarTables = initSimilarTables;
+  // Live destination recompute when the decide format changes.
+  document.addEventListener("input", function (e) {
+    if (e.target && e.target.id === "similar-decide-format") {
+      const table = tables["similar-table-matches"];
+      if (table) table.getRows().forEach((row) => row.reformat());
+    }
+  });
 
-  // Direct load (results already in the document).
   initCompareTables();
+  initSimilarTables();
 })();
+
+window.__initSimilarTables = initSimilarTables;

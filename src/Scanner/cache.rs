@@ -7,7 +7,7 @@
 //! scratch: an entry is only reset when the file itself changed (size or
 //! mtime), and directories are invalidated branch-wise on request.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -62,6 +62,9 @@ struct FileEntry {
     /// Mean chroma 0-255 (colorfulness): separates a B&W copy from its color
     /// original, which pHash alone cannot do.
     chroma: Option<u8>,
+    /// Gradient (dHash) signature: a second, independent structure hash that
+    /// must agree before two pictures are called similar.
+    dhash: Option<u64>,
     /// Cached creation date (may be a cached `Unknown`).
     date: Option<CreationDate>,
 }
@@ -214,7 +217,12 @@ impl ScanCache {
     /// Drop everything cached under `dir` (its own entries and all children).
     pub fn invalidate_branch(&mut self, dir: &Path) {
         // Volume-keyed branch.
-        if let Some(mount) = self.mount_for_path(dir) {
+        let mount = std::fs::metadata(dir)
+            .ok()
+            .map(|meta| device_of(&meta))
+            .and_then(|dev| self.volume_mount(dir, dev))
+            .or_else(|| self.mount_for_path(dir));
+        if let Some(mount) = mount {
             if let Some(dirs) = Self::dir_components_for_mount(&mount, dir) {
                 if let Some(node) = Self::node_comps_existing_mut(&mut self.root, &dirs) {
                     let dropped = node.file_count();
@@ -248,10 +256,85 @@ impl ScanCache {
     /// Per-layer coverage of the subtree at `path`: how many of its files
     /// have shallow hashes, deep data, phash, and dates cached. Counts both
     /// the volume-keyed branch and any not-yet-promoted legacy entries.
+    /// Merge root branches left behind by earlier boot-volume UUIDs (macOS
+    /// re-creates the sealed system volume on updates) into the current boot
+    /// branch. Only branches that mirror the boot filesystem's top level are
+    /// adopted; branches of other mounted volumes and of unmounted drives
+    /// (whose top-level names don't exist under "/") are left alone.
+    fn adopt_boot_orphans(&mut self) -> usize {
+        let Ok(boot_meta) = std::fs::metadata("/") else {
+            return 0;
+        };
+        let boot_dev = device_of(&boot_meta);
+        let boot_key = self
+            .volume_mount(Path::new("/"), boot_dev)
+            .map(|mount| mount.key)
+            .unwrap_or_else(|| volume_key_for(Path::new("/")));
+        let mounted_keys: HashSet<OsString> =
+            self.mounts.values().map(|mount| mount.key.clone()).collect();
+        let Ok(entries) = std::fs::read_dir("/") else {
+            return 0;
+        };
+        let root_names: HashSet<OsString> = entries.flatten().map(|e| e.file_name()).collect();
+        self.adopt_orphans_with(&boot_key, &mounted_keys, &root_names)
+    }
+
+    fn adopt_orphans_with(
+        &mut self,
+        boot_key: &OsString,
+        mounted_keys: &HashSet<OsString>,
+        root_names: &HashSet<OsString>,
+    ) -> usize {
+        let legacy = OsString::from(LEGACY_ROOT);
+        let candidates: Vec<OsString> = self
+            .root
+            .children
+            .iter()
+            .filter(|(key, branch)| {
+                *key != boot_key
+                    && **key != legacy
+                    && !mounted_keys.contains(*key)
+                    && branch.file_count() > 0
+                    && !branch.children.is_empty()
+                    && branch
+                        .children
+                        .keys()
+                        .all(|name| root_names.contains(name))
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        if candidates.is_empty() {
+            return 0;
+        }
+        let sources: Vec<DirNode> = candidates
+            .iter()
+            .filter_map(|key| self.root.children.remove(key))
+            .collect();
+        let target = self.root.children.entry(boot_key.clone()).or_default();
+        for node in sources {
+            merge_node(target, node);
+        }
+        self.stats.files = self.root.file_count();
+        tracing::info!(
+            "scan cache: merged {} stale boot-volume branch(es) into {boot_key:?}",
+            candidates.len()
+        );
+        candidates.len()
+    }
+
     pub fn branch_coverage(&mut self, path: &Path) -> BranchCoverage {
         let mut coverage = BranchCoverage::default();
 
-        if let Some(mount) = self.mount_for_path(path) {
+        // Resolve the volume exactly like lookups do (stat -> device ->
+        // mount walk); mount-point prefix matching alone misses paths that
+        // reach a volume through symlinks or the "/Users" side of the boot
+        // disk, which made cached trees look empty in the UI.
+        let mount = std::fs::metadata(path)
+            .ok()
+            .map(|meta| device_of(&meta))
+            .and_then(|dev| self.volume_mount(path, dev))
+            .or_else(|| self.mount_for_path(path));
+        if let Some(mount) = mount {
             if let Some((name, dirs)) = Self::key_components_for_mount(&mount, path) {
                 accumulate_at(&self.root, &dirs, &name, &mut coverage);
             }
@@ -272,7 +355,20 @@ impl ScanCache {
     /// still be determined from known mounts) and the legacy branch.
     fn remove_entry(&mut self, path: &Path) {
         let mut removed = false;
-        if let Some(mount) = self.mount_for_path(path) {
+        // The file is usually gone here; its parent still gives us the
+        // volume (stat the parent, mirroring lookup resolution).
+        let mount = std::fs::metadata(path)
+            .ok()
+            .map(|meta| device_of(&meta))
+            .and_then(|dev| self.volume_mount(path, dev))
+            .or_else(|| {
+                path.parent()
+                    .and_then(|parent| std::fs::metadata(parent).ok())
+                    .map(|meta| device_of(&meta))
+                    .and_then(|dev| self.volume_mount(path, dev))
+            })
+            .or_else(|| self.mount_for_path(path));
+        if let Some(mount) = mount {
             if let Some((name, dirs)) = Self::key_components_for_mount(&mount, path) {
                 if let Some(node) = Self::node_comps_existing_mut(&mut self.root, &dirs) {
                     removed |= node.files.remove(&name).is_some();
@@ -585,6 +681,14 @@ impl ScanCache {
         self.store_layer(path, value, |entry| &mut entry.chroma, |entry, v| entry.chroma = Some(v));
     }
 
+    pub fn dhash_lookup(&mut self, path: &Path) -> Option<u64> {
+        self.with_entry(path, |e| e.dhash, |_e, _v| {}, || None)
+    }
+
+    pub fn dhash_store(&mut self, path: &Path, value: u64) {
+        self.store_layer(path, value, |entry| &mut entry.dhash, |entry, v| entry.dhash = Some(v));
+    }
+
     /// Cached creation date (a cached `Unknown` is a real answer, so date
     /// presence itself is the cache hit).
     pub fn creation_date(&mut self, path: &Path) -> Option<CreationDate> {
@@ -710,11 +814,47 @@ fn mounted_volumes() -> Vec<(PathBuf, OsString)> {
 
 /// Key for a mount point: its UUID, or the mount path as a fallback (see the
 /// SMB TODO on `volume_uuid_for_mount`).
+///
+/// Boot-volume paths are keyed by the *data* volume's UUID: macOS re-creates
+/// the sealed system volume on OS updates, which changes its UUID and would
+/// otherwise strand every cached boot-volume entry under an old key.
 fn volume_key_for(mount: &Path) -> OsString {
+    if is_boot_mount(mount) {
+        if let Some(uuid) = boot_data_volume_uuid() {
+            return OsString::from(format!("vol:{uuid}"));
+        }
+    }
     match volume_uuid_for_mount(mount) {
         Some(uuid) => OsString::from(format!("vol:{uuid}")),
         None => OsString::from(format!("mount:{}", mount.display())),
     }
+}
+
+/// True when `mount` lives on the boot device (e.g. "/" and, on macOS,
+/// "/Volumes/Macintosh HD" both point at the sealed system volume).
+#[cfg(target_os = "macos")]
+fn is_boot_mount(mount: &Path) -> bool {
+    match (std::fs::metadata(mount), std::fs::metadata("/")) {
+        (Ok(a), Ok(b)) => device_of(&a) == device_of(&b),
+        _ => false,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_boot_mount(_mount: &Path) -> bool {
+    false
+}
+
+/// UUID of the APFS data volume backing the boot disk. Unlike the sealed
+/// system volume, it survives OS updates.
+#[cfg(target_os = "macos")]
+fn boot_data_volume_uuid() -> Option<String> {
+    volume_uuid_for_mount(Path::new("/System/Volumes/Data"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn boot_data_volume_uuid() -> Option<String> {
+    None
 }
 
 /// First component reserved for entries that could not be re-keyed at
@@ -735,7 +875,7 @@ fn device_of(_meta: &std::fs::Metadata) -> u64 {
 
 /// On-disk snapshot version. Bump when the entry shape changes; older files
 /// are migrated when the difference is lossless, ignored otherwise.
-const CACHE_FORMAT_VERSION: u32 = 5;
+const CACHE_FORMAT_VERSION: u32 = 6;
 
 // ---- version 1 compatibility -------------------------------------------
 // v1 stored a `sharpness` estimate inside Phash (a heuristic that was
@@ -813,6 +953,7 @@ mod v1 {
                 height: p.height,
             }),
             chroma: None,
+            dhash: None,
             date: entry.date,
         }
     }
@@ -856,6 +997,74 @@ mod v3 {
         #[allow(dead_code)]
         pub volume_ids: HashMap<u64, String>,
     }
+}
+
+/// v5: entries with chroma but without the gradient hash.
+mod v5 {
+    use super::*;
+    use std::ffi::OsString;
+    use std::time::SystemTime;
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    pub struct PersistedCache {
+        pub version: u32,
+        pub root: DirNode,
+        pub stats: CacheStats,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    pub struct DirNode {
+        pub children: HashMap<OsString, DirNode>,
+        pub files: HashMap<OsString, FileEntry>,
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    pub struct FileEntry {
+        pub size: u64,
+        pub mtime: Option<SystemTime>,
+        pub dev: u64,
+        pub shallow: Option<(u64, bool)>,
+        pub full_bytes: Option<u64>,
+        pub full_content: Option<u64>,
+        pub pixel: Option<PixelKey>,
+        pub phash: Option<Phash>,
+        pub chroma: Option<u8>,
+        pub date: Option<CreationDate>,
+    }
+
+    pub fn convert_node(node: DirNode) -> DirNodeSuper {
+        DirNodeSuper {
+            children: node
+                .children
+                .into_iter()
+                .map(|(name, child)| (name, convert_node(child)))
+                .collect(),
+            files: node
+                .files
+                .into_iter()
+                .map(|(name, entry)| (name, convert_entry(entry)))
+                .collect(),
+        }
+    }
+
+    fn convert_entry(entry: FileEntry) -> FileEntrySuper {
+        FileEntrySuper {
+            size: entry.size,
+            mtime: entry.mtime,
+            dev: entry.dev,
+            shallow: entry.shallow,
+            full_bytes: entry.full_bytes,
+            full_content: entry.full_content,
+            pixel: entry.pixel,
+            phash: entry.phash,
+            chroma: entry.chroma,
+            dhash: None,
+            date: entry.date,
+        }
+    }
+
+    type DirNodeSuper = super::DirNode;
+    type FileEntrySuper = super::FileEntry;
 }
 
 /// v4: volume-keyed tree, entries without the chroma layer.
@@ -916,6 +1125,7 @@ mod v4 {
             pixel: entry.pixel,
             phash: entry.phash,
             chroma: None,
+            dhash: None,
             date: entry.date,
         }
     }
@@ -984,6 +1194,27 @@ impl ScanCache {
                     ..ScanCache::default()
                 }
             }
+            5 => {
+                let snapshot: v5::PersistedCache = match bincode::deserialize(&data) {
+                    Ok(snapshot) => snapshot,
+                    Err(e) => {
+                        tracing::warn!("ignoring unreadable scan cache {}: {e}", path.display());
+                        return ScanCache::new();
+                    }
+                };
+                let root = v5::convert_node(snapshot.root);
+                let files = root.file_count();
+                tracing::info!(
+                    "scan cache {} migrated from version 5: {files} files",
+                    path.display()
+                );
+                ScanCache {
+                    root,
+                    stats: CacheStats { files, ..snapshot.stats },
+                    ..ScanCache::default()
+                }
+                .with_dirty()
+            }
             4 => {
                 let snapshot: v4::PersistedCache = match bincode::deserialize(&data) {
                     Ok(snapshot) => snapshot,
@@ -1046,6 +1277,9 @@ impl ScanCache {
         };
 
         cache.refresh_mounts();
+        if cache.adopt_boot_orphans() > 0 {
+            cache = cache.with_dirty();
+        }
         tracing::info!("scan cache loaded: {} files", cache.stats.files);
         cache
     }
@@ -1093,6 +1327,45 @@ impl ScanCache {
 
 /// Add the coverage of one location (a file, a directory, or nothing) to
 /// the running total.
+/// Merge `source` into `target`, keeping existing entries and filling in
+/// missing layers from the source (the source is typically an old-key branch
+/// whose layers are as good as, or older than, the target's).
+fn merge_node(target: &mut DirNode, source: DirNode) {
+    for (name, child) in source.children {
+        match target.children.entry(name) {
+            std::collections::hash_map::Entry::Occupied(mut occupied) => {
+                merge_node(occupied.get_mut(), child);
+            }
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                vacant.insert(child);
+            }
+        }
+    }
+    for (name, entry) in source.files {
+        match target.files.entry(name) {
+            std::collections::hash_map::Entry::Occupied(mut occupied) => {
+                merge_entry_layers(occupied.get_mut(), entry);
+            }
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                vacant.insert(entry);
+            }
+        }
+    }
+}
+
+fn merge_entry_layers(target: &mut FileEntry, source: FileEntry) {
+    target.shallow = target.shallow.or(source.shallow);
+    target.full_bytes = target.full_bytes.or(source.full_bytes);
+    target.full_content = target.full_content.or(source.full_content);
+    target.pixel = target.pixel.or(source.pixel);
+    target.phash = target.phash.or(source.phash);
+    target.chroma = target.chroma.or(source.chroma);
+    target.dhash = target.dhash.or(source.dhash);
+    if target.date.is_none() {
+        target.date = source.date;
+    }
+}
+
 fn accumulate_at(
     root: &DirNode,
     dirs: &[OsString],
@@ -1321,13 +1594,20 @@ pub fn full_content_cached(cache: &Mutex<ScanCache>, path: &Path) -> Result<u64,
 /// Perceptual hash + chroma through the cache. Phash and chroma both need a
 /// decode, so missing pieces are filled with a single decode pass (the old
 /// phash value survives if only the chroma is new).
-pub fn perceptual_cached(cache: &Mutex<ScanCache>, path: &Path) -> Option<(Phash, Option<u8>)> {
-    let (phash, chroma) = {
+pub fn perceptual_cached(
+    cache: &Mutex<ScanCache>,
+    path: &Path,
+) -> Option<(Phash, Option<u8>, Option<u64>)> {
+    let (phash, chroma, dhash) = {
         let mut cache = lock(cache);
-        (cache.phash_lookup(path), cache.chroma_lookup(path))
+        (
+            cache.phash_lookup(path),
+            cache.chroma_lookup(path),
+            cache.dhash_lookup(path),
+        )
     };
-    if let (Some(phash), Some(chroma)) = (phash, chroma) {
-        return Some((phash, Some(chroma)));
+    if let (Some(phash), Some(chroma), Some(dhash)) = (phash, chroma, dhash) {
+        return Some((phash, Some(chroma), Some(dhash)));
     }
 
     let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1335,7 +1615,7 @@ pub fn perceptual_cached(cache: &Mutex<ScanCache>, path: &Path) -> Option<(Phash
     }));
     let image = match decoded {
         Ok(Ok(image)) => image,
-        _ => return phash.map(|phash| (phash, None)),
+        _ => return phash.map(|phash| (phash, chroma, dhash)),
     };
     let phash = match phash {
         Some(phash) => phash,
@@ -1355,7 +1635,17 @@ pub fn perceptual_cached(cache: &Mutex<ScanCache>, path: &Path) -> Option<(Phash
             None => None,
         },
     };
-    Some((phash, chroma))
+    let dhash = match dhash {
+        Some(dhash) => Some(dhash),
+        None => match image_reader::gradient_hash_of(&image) {
+            Some(dhash) => {
+                lock(cache).dhash_store(path, dhash);
+                Some(dhash)
+            }
+            None => None,
+        },
+    };
+    Some((phash, chroma, dhash))
 }
 
 /// Perceptual hash through the cache, computed outside the lock.
@@ -1426,6 +1716,158 @@ pub fn creation_dates_cached(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_entry(size: u64) -> FileEntry {
+        FileEntry {
+            size,
+            mtime: None,
+            dev: 1,
+            shallow: Some((size, true)),
+            full_bytes: None,
+            full_content: None,
+            pixel: None,
+            phash: None,
+            chroma: None,
+            dhash: None,
+            date: None,
+        }
+    }
+
+    #[test]
+    fn merging_branches_keeps_existing_layers_and_adopts_missing_ones() {
+        let mut target = DirNode {
+            children: HashMap::new(),
+            files: HashMap::new(),
+        };
+        let mut source = DirNode {
+            children: HashMap::new(),
+            files: HashMap::new(),
+        };
+
+        let mut target_entry = test_entry(100);
+        target_entry.phash = Some(Phash { hash: 0x11, width: 8, height: 8 });
+        let mut source_entry = test_entry(100);
+        source_entry.phash = Some(Phash { hash: 0x22, width: 8, height: 8 });
+        source_entry.dhash = Some(0x33);
+        source_entry.chroma = Some(200);
+
+        target.files.insert(OsString::from("a.jpg"), target_entry);
+        source.files.insert(OsString::from("a.jpg"), source_entry);
+        source.files.insert(OsString::from("b.jpg"), test_entry(50));
+        source.children.insert(
+            OsString::from("sub"),
+            DirNode {
+                children: HashMap::new(),
+                files: HashMap::from([(OsString::from("c.jpg"), test_entry(10))]),
+            },
+        );
+
+        merge_node(&mut target, source);
+
+        let a = target.files.get(&OsString::from("a.jpg")).unwrap();
+        assert_eq!(a.phash.unwrap().hash, 0x11, "existing layer kept");
+        assert_eq!(a.dhash, Some(0x33), "missing layer adopted");
+        assert_eq!(a.chroma, Some(200));
+        assert!(target.files.contains_key(&OsString::from("b.jpg")));
+        assert_eq!(
+            target
+                .children
+                .get(&OsString::from("sub"))
+                .unwrap()
+                .files
+                .get(&OsString::from("c.jpg"))
+                .unwrap()
+                .size,
+            10
+        );
+    }
+
+    #[test]
+    fn orphan_branches_mirroring_the_boot_root_are_adopted() {
+        let mut cache = ScanCache::default();
+        let boot: OsString = OsString::from("vol:NEW");
+        let old: OsString = OsString::from("vol:OLD");
+        let other: OsString = OsString::from("vol:OTHER");
+        let unplugged: OsString = OsString::from("vol:GONE");
+
+        // old boot branch: mirrors "/" (top-level "Users")
+        cache.root.children.insert(
+            old.clone(),
+            DirNode {
+                children: HashMap::from([(
+                    OsString::from("Users"),
+                    DirNode {
+                        children: HashMap::new(),
+                        files: HashMap::from([(OsString::from("a.jpg"), test_entry(3))]),
+                    },
+                )]),
+                files: HashMap::new(),
+            },
+        );
+        // current boot branch with a newer entry
+        cache.root.children.insert(
+            boot.clone(),
+            DirNode {
+                children: HashMap::from([(
+                    OsString::from("Users"),
+                    DirNode {
+                        children: HashMap::new(),
+                        files: HashMap::from([(OsString::from("new.jpg"), test_entry(9))]),
+                    },
+                )]),
+                files: HashMap::new(),
+            },
+        );
+        // a mounted other volume: never a candidate
+        cache.root.children.insert(
+            other.clone(),
+            DirNode {
+                children: HashMap::from([(
+                    OsString::from("Users"),
+                    DirNode {
+                        children: HashMap::new(),
+                        files: HashMap::from([(OsString::from("x.jpg"), test_entry(1))]),
+                    },
+                )]),
+                files: HashMap::new(),
+            },
+        );
+        // an unplugged drive whose root names don't exist under "/"
+        cache.root.children.insert(
+            unplugged.clone(),
+            DirNode {
+                children: HashMap::from([(
+                    OsString::from("SomeExternalFolder"),
+                    DirNode {
+                        children: HashMap::new(),
+                        files: HashMap::from([(OsString::from("y.jpg"), test_entry(1))]),
+                    },
+                )]),
+                files: HashMap::new(),
+            },
+        );
+
+        let mounted: HashSet<OsString> = HashSet::from([other.clone()]);
+        let root_names: HashSet<OsString> = HashSet::from([OsString::from("Users")]);
+        let adopted = cache.adopt_orphans_with(&boot, &mounted, &root_names);
+
+        assert_eq!(adopted, 1);
+        assert!(!cache.root.children.contains_key(&old));
+        assert!(cache.root.children.contains_key(&other));
+        assert!(cache.root.children.contains_key(&unplugged));
+        let users = cache
+            .root
+            .children
+            .get(&boot)
+            .unwrap()
+            .children
+            .get(&OsString::from("Users"))
+            .unwrap();
+        assert!(users.files.contains_key(&OsString::from("a.jpg")));
+        assert!(users.files.contains_key(&OsString::from("new.jpg")));
+        // both boot entries plus the untouched other/unplugged branches
+        assert_eq!(cache.stats.files, 4);
+    }
 
     fn insert_v1(root: &mut v1::DirNode, path: &Path, entry: v1::FileEntry) {
         let mut node = root;
@@ -1738,16 +2180,18 @@ mod chroma_tests {
         std::fs::copy(&src, &file).unwrap();
 
         let cache = Mutex::new(ScanCache::new());
-        let (phash, chroma) = perceptual_cached(&cache, &file).expect("perceptual");
+        let (phash, chroma, dhash) = perceptual_cached(&cache, &file).expect("perceptual");
         assert!(chroma.is_some(), "color jpeg has a chroma value");
-        assert!(lock(&cache).stats().computed >= 2, "hash and chroma stored");
+        assert!(dhash.is_some(), "gradient hash stored too");
+        assert!(lock(&cache).stats().computed >= 3, "hash, chroma and dhash stored");
 
         // Second pass: everything served from the cache.
         let before = lock(&cache).stats();
-        let (phash2, chroma2) = perceptual_cached(&cache, &file).expect("perceptual");
+        let (phash2, chroma2, dhash2) = perceptual_cached(&cache, &file).expect("perceptual");
         let after = lock(&cache).stats();
         assert_eq!(phash, phash2);
         assert_eq!(chroma, chroma2);
+        assert_eq!(dhash, dhash2);
         assert_eq!(after.computed, before.computed, "no recompute");
 
         let _ = std::fs::remove_file(&file);
@@ -1819,6 +2263,77 @@ mod chroma_tests {
             before.computed,
             "v4 knowledge served without recomputation"
         );
+
+        let _ = std::fs::remove_file(&store);
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir(&dir);
+    }
+}
+
+#[cfg(test)]
+mod dhash_tests {
+    use super::*;
+
+    #[test]
+    fn version_5_snapshots_migrate_keeping_chroma() {
+        let dir = std::env::temp_dir().join(format!("dedupe2-v5-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = dir.join("cache.bin");
+        let file = dir.join("photo.jpg");
+        std::fs::write(&file, vec![4u8; 1024]).unwrap();
+        let meta = std::fs::metadata(&file).unwrap();
+
+        let (name, dirs) = ScanCache::new()
+            .key_components(&file, device_of(&meta))
+            .expect("key components");
+        let empty = || v5::DirNode {
+            children: HashMap::new(),
+            files: HashMap::new(),
+        };
+        let mut root = empty();
+        let mut node = &mut root;
+        for component in &dirs {
+            node = node.children.entry(component.clone()).or_insert_with(empty);
+        }
+        node.files.insert(
+            name,
+            v5::FileEntry {
+                size: meta.len(),
+                mtime: meta.modified().ok(),
+                dev: 7,
+                shallow: Some((0xB0B, true)),
+                full_bytes: None,
+                full_content: None,
+                pixel: None,
+                phash: Some(Phash {
+                    hash: 55,
+                    width: 10,
+                    height: 20,
+                }),
+                chroma: Some(42),
+                date: None,
+            },
+        );
+        let snapshot = v5::PersistedCache {
+            version: 5,
+            root,
+            stats: CacheStats {
+                files: 1,
+                reused: 0,
+                computed: 1,
+            },
+        };
+        std::fs::write(&store, bincode::serialize(&snapshot).unwrap()).unwrap();
+
+        let mut cache = ScanCache::load(&store);
+        assert_eq!(cache.stats().files, 1);
+        assert!(cache.dirty(), "migration schedules a v6 rewrite");
+        let before = cache.stats();
+        assert_eq!(cache.shallow_hash(&file, 64 * 1024), (0xB0B, true));
+        assert_eq!(cache.phash(&file).unwrap().hash, 55);
+        assert_eq!(cache.chroma_lookup(&file), Some(42), "chroma preserved");
+        assert_eq!(cache.dhash_lookup(&file), None, "dhash fills in lazily");
+        assert_eq!(cache.stats().computed, before.computed, "no recompute");
 
         let _ = std::fs::remove_file(&store);
         let _ = std::fs::remove_file(&file);

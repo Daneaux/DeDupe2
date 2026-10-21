@@ -754,8 +754,172 @@ body {
   color: var(--danger);
 }
 
+.table-scroll {
+  max-height: 65vh;
+}
+
+.tabulator-host {
+  width: 100%;
+}
+
+.tabulator {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.tabulator .tabulator-header {
+  background: var(--surface);
+  color: var(--text);
+  border-bottom: 2px solid var(--border);
+}
+
+.tabulator .tabulator-header .tabulator-col {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+.tabulator .tabulator-header .tabulator-col .tabulator-col-resize-handle {
+  width: 8px;
+}
+
+.tabulator
+  .tabulator-header
+  .tabulator-col
+  .tabulator-col-resize-handle:hover {
+  background: var(--primary);
+  opacity: 0.6;
+}
+
+.tabulator .tabulator-row {
+  background: var(--surface);
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+
+.tabulator .tabulator-row.tabulator-row-even {
+  background: var(--surface);
+}
+
+.tabulator .tabulator-row.tabulator-selectable:hover {
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.tabulator .tabulator-row.tabulator-selected {
+  background: rgba(37, 99, 235, 0.16) !important;
+}
+
+.tabulator .tabulator-header .tabulator-col.tabulator-sortable:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.tabulator .tabulator-footer {
+  background: var(--surface);
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+}
+
+.tabulator .tabulator-page,
+.tabulator .tabulator-page-size {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.tabulator .tabulator-page.active {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.tabulator .tabulator-page:not(.disabled):hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.fullscreen-exit {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  z-index: 1;
+}
+
+.table-frame {
+  position: relative;
+  width: 100%;
+  /* Not capped at the content column: the corner handle may widen the table
+     area beyond the panel, up to (nearly) the viewport. */
+  max-width: calc(100vw - 3rem);
+  margin-bottom: 0.6rem;
+}
+
+.table-frame.fullscreen {
+  position: fixed;
+  inset: 0.75rem;
+  width: auto !important;
+  max-width: none;
+  z-index: 60;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.table-frame.fullscreen .tabulator-host {
+  flex: 1 1 auto;
+}
+
+.corner-resizer {
+  position: absolute;
+  right: -2px;
+  bottom: 2px;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  touch-action: none;
+  border-radius: 0 0 6px 0;
+  background:
+    linear-gradient(135deg, transparent 45%, var(--muted) 45%, var(--muted) 55%, transparent 55%),
+    linear-gradient(135deg, transparent 65%, var(--muted) 65%, var(--muted) 75%, transparent 75%);
+  opacity: 0.7;
+}
+
+.corner-resizer:hover {
+  opacity: 1;
+}
+
+.similarity-slider {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.similarity-slider input[type="range"] {
+  width: 140px;
+}
+
+.table-resizer {
+  height: 10px;
+  margin: 0.15rem 0 0.6rem;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.18);
+  cursor: row-resize;
+  user-select: none;
+  touch-action: none;
+}
+
+.table-resizer:hover {
+  background: var(--primary);
+  opacity: 0.6;
+}
+
 .table-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.6rem;
   margin: 0.4rem 0 0.6rem;
@@ -781,4 +945,25 @@ body {
 .table-action .hint {
   flex-basis: 100%;
   margin: 0;
+}
+
+.previews {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.thumb {
+  height: 150px;
+  max-width: 200px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.12);
+  flex: 0 0 auto;
+}
+
+.tabulator .tabulator-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

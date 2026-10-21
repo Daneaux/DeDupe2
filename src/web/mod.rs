@@ -28,9 +28,10 @@ use crate::Scanner::similar::{
     SimilarOutcome,
 };
 use crate::filemover::{
-    destination_for, move_to_purgatory_with_progress, organize_into_destination_with_progress,
-    plan_rehome, rehome_verified, swap_better_copies_with_progress,
-    transfer_dated_with_progress, transfer_files_with_progress, CopyOutcome, RehomeOutcome,
+    apply_similar_decisions_with_progress, destination_for, move_to_purgatory_with_progress,
+    organize_into_destination_with_progress, plan_rehome, rehome_verified,
+    swap_better_copies_with_progress, transfer_dated_with_progress, transfer_files_with_progress,
+    CopyOutcome, RehomeOutcome, SimilarDecision,
 };
 use std::process::Command;
 
@@ -292,6 +293,30 @@ struct SimilarResultTemplate {
     candidates_input: String,
     /// Exact-duplicate extras, one per line — their purgatory move form.
     duplicates_input: String,
+}
+
+#[derive(serde::Deserialize)]
+struct DecideForm {
+    /// One `a_path<TAB>b_path<TAB>action` line per selected row.
+    decisions: String,
+    a_root: String,
+    b_root: String,
+    purgatory: String,
+    format: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "similar_decide_done.html")]
+struct SimilarDecideTemplate {
+    a_root: String,
+    b_root: String,
+    purgatory: String,
+    planned: usize,
+    kept_both: usize,
+    purged_both: usize,
+    bigger_taken: usize,
+    failure_count: usize,
+    failures: Vec<(String, String)>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1273,6 +1298,35 @@ fn render_purgatory(
 }
 
 #[derive(serde::Deserialize)]
+struct ThumbQuery {
+    path: String,
+}
+
+/// Small JPEG preview of a file for the result tables (lazy-loaded by the
+/// browser). Local tool: paths are read directly, nothing is exposed.
+async fn thumb(Query(query): Query<ThumbQuery>) -> axum::response::Response {
+    use axum::http::header;
+    use axum::response::IntoResponse;
+
+    let path = PathBuf::from(query.path.trim());
+    let bytes = tokio::task::spawn_blocking(move || crate::image_reader::thumbnail_jpeg(&path))
+        .await
+        .ok()
+        .flatten();
+    match bytes {
+        Some(bytes) => (
+            [
+                (header::CONTENT_TYPE, "image/jpeg"),
+                (header::CACHE_CONTROL, "private, max-age=3600"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "no preview").into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
 struct CacheStatusQuery {
     path: String,
 }
@@ -1457,12 +1511,21 @@ async fn similar_run(
                     }
                 };
                 let after = crate::Scanner::cache::lock(&state.cache).stats();
+                // EXIF dates for the B copies power the per-row destination
+                // preview and the keep-both action (cache-backed).
+                let b_paths: Vec<PathBuf> = outcome.matches.iter().map(|m| m.b.clone()).collect();
+                let dates = crate::Scanner::cache::creation_dates_cached(
+                    &state.cache,
+                    &b_paths,
+                    &progress,
+                );
                 render_similar_compare(
                     &outcome,
                     &root_str,
                     &other,
                     after.reused.saturating_sub(before.reused),
                     after.computed.saturating_sub(before.computed),
+                    &dates,
                 )
             }
             None => {
@@ -1494,6 +1557,7 @@ fn render_similar_compare(
     b_root: &str,
     cache_reused: usize,
     cache_computed: usize,
+    dates: &[CreationDate],
 ) -> String {
     let swap_count = outcome
         .matches
@@ -1511,10 +1575,12 @@ fn render_similar_compare(
     let rows: Vec<serde_json::Value> = outcome
         .matches
         .iter()
-        .map(|m| {
+        .enumerate()
+        .map(|(i, m)| {
             serde_json::json!({
                 "a": to_string(&m.a),
                 "b": to_string(&m.b),
+                "date": dates.get(i).map(|d| d.to_string()).unwrap_or_else(|| "unknown".into()),
                 "distance": m.distance,
                 "verdict": if m.removable {
                     "B is the smaller file — removable"
@@ -1685,6 +1751,87 @@ async fn compare_transfer(
             planned: outcome.planned,
             transferred: outcome.transferred,
             renamed_on_collision: outcome.renamed_on_collision,
+            failure_count: outcome.failures.len(),
+            failures: outcome
+                .failures
+                .iter()
+                .map(|(path, reason)| (to_string(path), reason.clone()))
+                .collect(),
+        };
+        let html = tpl.render().unwrap_or_else(|e| format!("render error: {e}"));
+        let _ = done_tx.send(Msg::Done(html));
+    });
+
+    Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
+}
+
+/// Execute the per-row decisions from the similar table.
+async fn similar_decide(
+    Form(form): Form<DecideForm>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
+    let mut decisions: Vec<(PathBuf, PathBuf, SimilarDecision)> = Vec::new();
+    for line in form.decisions.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split('\t');
+        let a = parts.next().unwrap_or("").trim();
+        let b = parts.next().unwrap_or("").trim();
+        let action = parts.next().unwrap_or("").trim();
+        let decision = match action {
+            "keep_both" => SimilarDecision::KeepBoth,
+            "purgatory_both" => SimilarDecision::PurgatoryBoth,
+            "take_bigger" => SimilarDecision::TakeBigger,
+            _ => continue,
+        };
+        if !a.is_empty() && !b.is_empty() {
+            decisions.push((PathBuf::from(a), PathBuf::from(b), decision));
+        }
+    }
+    if decisions.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "no decisions to apply".into()));
+    }
+    let a_root = PathBuf::from(form.a_root.trim());
+    let b_root = PathBuf::from(form.b_root.trim());
+    require_dir(&a_root)?;
+    require_dir(&b_root)?;
+    require_disjoint_trees(&a_root, &b_root)?;
+    let purgatory = form.purgatory.trim().to_string();
+    if purgatory.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "provide a purgatory folder".into()));
+    }
+    let format = form
+        .format
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| DEFAULT_FORMAT.to_string());
+
+    let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+    let progress_tx = tx.clone();
+    let done_tx = tx.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let progress = move |done: usize, total: usize| {
+            let _ = progress_tx.send(Msg::Progress(done, total));
+        };
+        progress(0, decisions.len());
+        let outcome = apply_similar_decisions_with_progress(
+            &decisions,
+            &a_root,
+            &b_root,
+            Path::new(&purgatory),
+            &format,
+            &progress,
+        );
+        let tpl = SimilarDecideTemplate {
+            a_root: to_string(&a_root),
+            b_root: to_string(&b_root),
+            purgatory,
+            planned: outcome.planned,
+            kept_both: outcome.kept_both,
+            purged_both: outcome.purged_both,
+            bigger_taken: outcome.bigger_taken,
             failure_count: outcome.failures.len(),
             failures: outcome
                 .failures
@@ -2396,6 +2543,7 @@ pub fn app_with_state(state: AppState) -> Router {
         .route("/settings/clear", post(settings_clear))
         .route("/similar", get(similar_form))
         .route("/similar/swap", post(similar_swap))
+        .route("/similar/decide", post(similar_decide))
         .route("/compare/transfer", post(compare_transfer))
         .route("/similar/run", post(similar_run))
         .route("/organize", get(organize_form))
@@ -2403,6 +2551,7 @@ pub fn app_with_state(state: AppState) -> Router {
         .route("/organize/run", post(organize_run))
         .route("/compare/purgatory", post(compare_purgatory))
         .route("/cache-status", get(cache_status))
+        .route("/thumb", get(thumb))
         .nest_service("/static", ServeDir::new("static"))
         // Compare forms post the full originals list back to the server (one
         // path per line) — several MB for large candidate trees. NOTE: this

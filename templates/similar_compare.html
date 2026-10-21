@@ -46,7 +46,6 @@
         <tbody id="similar-table-dups"></tbody>
       </table>
     </div>
-    <button type="button" class="btn btn-small btn-secondary table-more" id="similar-more-dups" hidden>more…</button>
     <form method="post" action="/compare/purgatory" id="purgatory-form-dups" class="merge-form">
       <input type="hidden" name="files" value="{{ duplicates_input }}" />
       <input type="hidden" name="b_root" value="{{ b_root }}" />
@@ -67,15 +66,43 @@
   {% else %}
   <div class="table-tools">
     <input type="text" class="table-filter" id="similar-filter-matches" placeholder="filter this table…" />
+    <label class="field similarity-slider">
+      <span>similarity &le;</span>
+      <input type="range" id="similar-similarity-matches" min="0" max="6" value="6" />
+      <span class="hint" id="similar-similarity-matches-value">6</span>
+      <span class="hint">bits of pHash distance — lower is stricter; 0 = essentially identical structure</span>
+    </label>
     <span class="hint" id="similar-count-matches"></span>
   </div>
   <div class="table-scroll">
     <table class="compare-table">
-      <thead><tr><th>A (kept when bigger)</th><th>B</th><th>Verdict</th><th>Distance</th><th>A px</th><th>B px</th><th>A size</th><th>B size</th></tr></thead>
+      <thead><tr><th>Use</th><th>Preview</th><th>A (kept when bigger)</th><th>B</th><th>Verdict</th><th>Action</th><th>Destination (EXIF of B)</th><th>Distance</th><th>A px</th><th>B px</th><th>A size</th><th>B size</th><th>Size &Delta;</th></tr></thead>
       <tbody id="similar-table-matches"></tbody>
     </table>
   </div>
-  <button type="button" class="btn btn-small btn-secondary table-more" id="similar-more-matches" hidden>more…</button>
+
+  <form method="post" action="/similar/decide" id="similar-decide-form" class="merge-form">
+    <input type="hidden" name="decisions" value="" />
+    <input type="hidden" name="a_root" value="{{ a_root }}" />
+    <input type="hidden" name="b_root" value="{{ b_root }}" />
+    <label class="field">
+      <span>Purgatory folder (for B copies and "keep neither")</span>
+      <input type="text" name="purgatory" placeholder="/path/to/purgatory" />
+    </label>
+    <label class="field">
+      <span>Destination format for "keep both"</span>
+      <input type="text" name="format" id="similar-decide-format" value="YYYY/MM-DD &lt;folder description&gt;" />
+      <span class="hint">Editing this recomputes the Destination column live. The destination root is A: {{ a_root }}</span>
+    </label>
+    <span class="hint">
+      Tick rows, choose an action per row, then apply. 1 &middot; keep both (B is renamed in and moved to its EXIF
+      destination under A); 2 &middot; keep neither (both copies move to purgatory); 3 &middot; take bigger (suggested).
+      Every move is copy &rarr; byte-verify &rarr; remove; failures leave both copies.
+    </span>
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-small btn-primary">Apply selected decisions</button>
+    </div>
+  </form>
 
   <form method="post" action="/compare/purgatory" id="purgatory-form" class="merge-form">
     <input type="hidden" name="files" value="{{ candidates_input }}" />

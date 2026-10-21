@@ -18,9 +18,16 @@ use image_hasher::{FilterType, HashAlg, HasherConfig};
 
 use super::types::{ImageData, PixelData};
 
-/// Hamming distance at or below which two lossy same-kind images count as
-/// near-duplicates (scaled/recompressed copies of the same photo).
-pub const SIMILAR_MAX_DISTANCE: u32 = 10;
+/// pHash Hamming distance at or below which two lossy same-kind images can
+/// count as near-duplicates. Measured: scaled/recompressed copies land at 0,
+/// unrelated photos at 26+; 8 was seen for a pHash collision of two different
+/// photos, so the bar is tight and always paired with a second hash.
+pub const SIMILAR_MAX_DISTANCE: u32 = 6;
+
+/// The gradient (dHash) distance bound that must ALSO hold for a similar
+/// pair. Same measurements: true copies 0, unrelated 29+, the known false
+/// positive at 10.
+pub const DHASH_SIMILAR_MAX_DISTANCE: u32 = 6;
 
 /// Perceptual hash plus the source dimensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -78,6 +85,26 @@ pub fn phash_of(image: &ImageData) -> Option<Phash> {
     })
 }
 
+/// Gradient (dHash) of a decoded image: row-wise structure, independent of
+/// the DCT pHash. Two independent signatures must agree before two pictures
+/// are called similar.
+pub fn gradient_hash_of(image: &ImageData) -> Option<u64> {
+    let dynamic = to_dynamic(image)?;
+    let hasher = HasherConfig::new()
+        .hash_size(8, 8)
+        .hash_alg(HashAlg::Gradient)
+        .resize_filter(FilterType::Lanczos3)
+        .to_hasher();
+    let hash = hasher.hash_image(&dynamic);
+    let bytes = hash.as_bytes();
+    if bytes.len() < 8 {
+        return None;
+    }
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(&bytes[..8]);
+    Some(u64::from_le_bytes(buf))
+}
+
 /// pHash of a file: decode (panics contained) then hash the pixels.
 pub fn phash(path: &Path) -> Option<Phash> {
     let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -131,7 +158,7 @@ pub fn distance_of(a: &Phash, b: &Phash) -> u32 {
 /// Bridge our decoded pixel container into the `image` crate type the hasher
 /// works on. 16-bit samples are scaled to 8-bit; unusual channel counts fall
 /// back to their first channel as luminance.
-fn to_dynamic(image: &ImageData) -> Option<image::DynamicImage> {
+pub(super) fn to_dynamic(image: &ImageData) -> Option<image::DynamicImage> {
     let (width, height) = (image.width as u32, image.height as u32);
     if width == 0 || height == 0 || image.cpp == 0 {
         return None;

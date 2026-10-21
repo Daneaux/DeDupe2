@@ -486,3 +486,117 @@ fn cross_tree_compare_ignores_black_and_white_counterparts() {
     );
     assert!(outcome.removable_b.is_empty());
 }
+
+/// Environment-specific regression: two genuinely different photos that a
+/// lone pHash called similar (distance 8). With the tightened threshold and
+/// the second (gradient) hash they must not match at all.
+/// Run with `cargo test --test similar known_false_pair -- --ignored`.
+#[test]
+#[ignore]
+fn known_false_pair_is_not_similar() {
+    use dedupe2::Scanner::similar::find_similar_between_with_progress;
+
+    let a_file = std::path::Path::new(
+        "/Users/dannydalal/4tbext/AllPhotos/2017/05-12/IMG_0173.JPG",
+    );
+    let b_file = std::path::Path::new(
+        "/Users/dannydalal/4tbext/SrcImageFolders/iCloud/downloaded/Actual 2017/IMG_2536.JPG",
+    );
+    if !a_file.exists() || !b_file.exists() {
+        eprintln!("sample files missing — skip");
+        return;
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let a_dir = root.path().join("a");
+    let b_dir = root.path().join("b");
+    std::fs::create_dir_all(&a_dir).unwrap();
+    std::fs::create_dir_all(&b_dir).unwrap();
+    std::fs::copy(a_file, a_dir.join("IMG_0173.JPG")).unwrap();
+    std::fs::copy(b_file, b_dir.join("IMG_2536.JPG")).unwrap();
+
+    let cache = std::sync::Mutex::new(ScanCache::new());
+    let outcome = find_similar_between_with_progress(&a_dir, &b_dir, &cache, &|_, _| {}).unwrap();
+    assert!(
+        outcome.matches.is_empty(),
+        "different photos must not be similar: {outcome:?}"
+    );
+    assert!(outcome.exact_duplicates.is_empty());
+}
+
+#[test]
+fn similar_decisions_keep_both_purge_both_and_take_bigger() {
+    use dedupe2::filemover::{apply_similar_decisions_with_progress, SimilarDecision};
+
+    let root = tempfile::tempdir().unwrap();
+    let a_root = root.path().join("library");
+    let b_root = root.path().join("candidate");
+    let purgatory = root.path().join("purgatory");
+    std::fs::create_dir_all(&a_root).unwrap();
+    std::fs::create_dir_all(&b_root).unwrap();
+    // The fixture carries EXIF date 2022-08-17.
+    let original = sample("jpg-exif-mod/image1.JPG");
+
+    // 1. keep both: A copy stays, B copy is renamed-in at its EXIF destination.
+    let a_keep = a_root.join("kept.jpg");
+    let b_keep = b_root.join("kept.jpg");
+    std::fs::write(&a_keep, b"a-side").unwrap();
+    std::fs::copy(&original, &b_keep).unwrap();
+    // 2. purgatory both.
+    let a_purge = a_root.join("purge.jpg");
+    let b_purge = b_root.join("purge.jpg");
+    std::fs::write(&a_purge, b"a-purge").unwrap();
+    std::fs::write(&b_purge, b"b-purge").unwrap();
+    // 3a. take bigger, B bigger: swap.
+    let a_small = a_root.join("swap.jpg");
+    let b_big = b_root.join("swap.jpg");
+    std::fs::write(&a_small, b"small").unwrap();
+    std::fs::write(&b_big, vec![7u8; 4096]).unwrap();
+    // 3b. take bigger, A bigger: B goes to purgatory.
+    let a_big = a_root.join("keep-a.jpg");
+    let b_small = b_root.join("keep-a.jpg");
+    std::fs::write(&a_big, vec![9u8; 4096]).unwrap();
+    std::fs::write(&b_small, b"small").unwrap();
+
+    let decisions = vec![
+        (a_keep.clone(), b_keep.clone(), SimilarDecision::KeepBoth),
+        (a_purge.clone(), b_purge.clone(), SimilarDecision::PurgatoryBoth),
+        (a_small.clone(), b_big.clone(), SimilarDecision::TakeBigger),
+        (a_big.clone(), b_small.clone(), SimilarDecision::TakeBigger),
+    ];
+    let outcome = apply_similar_decisions_with_progress(
+        &decisions,
+        &a_root,
+        &b_root,
+        &purgatory,
+        "YYYY/MM-DD",
+        &|_, _| {},
+    );
+
+    assert_eq!(outcome.kept_both, 1, "{outcome:?}");
+    assert_eq!(outcome.purged_both, 1, "{outcome:?}");
+    assert_eq!(outcome.bigger_taken, 2, "{outcome:?}");
+    assert!(outcome.failures.is_empty(), "{outcome:?}");
+
+    // 1. B moved into A under 2022/08-17 (date from its EXIF).
+    assert!(a_keep.exists(), "A copy stays");
+    assert!(!b_keep.exists());
+    let moved = a_root.join("2022/08-17/kept.jpg");
+    assert!(moved.exists(), "B renamed-in at its EXIF destination");
+    assert_eq!(std::fs::read(&moved).unwrap(), std::fs::read(&original).unwrap());
+
+    // 2. both copies in purgatory, nothing left in either tree.
+    assert!(!a_purge.exists() && !b_purge.exists());
+    assert!(purgatory.join("purge.jpg").exists());
+    assert!(purgatory.join("candidate-purge.jpg").exists() || purgatory.join("purge (1).jpg").exists());
+
+    // 3a. swap: A path now holds the bigger B content; the small A copy is safe.
+    assert_eq!(std::fs::read(&a_small).unwrap(), vec![7u8; 4096]);
+    assert!(!b_big.exists());
+    assert!(purgatory.join("swap.jpg").exists());
+
+    // 3b. A keeps the bigger copy; B went to purgatory.
+    assert_eq!(std::fs::read(&a_big).unwrap(), vec![9u8; 4096]);
+    assert!(!b_small.exists());
+    assert!(purgatory.join("keep-a.jpg").exists() || purgatory.join("keep-a (1).jpg").exists());
+}

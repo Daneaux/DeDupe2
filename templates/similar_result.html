@@ -46,7 +46,6 @@
         <tbody id="similar-table-dups"></tbody>
       </table>
     </div>
-    <button type="button" class="btn btn-small btn-secondary table-more" id="similar-more-dups" hidden>more…</button>
     <form method="post" action="/compare/purgatory" id="purgatory-form-dups" class="merge-form">
       <input type="hidden" name="files" value="{{ duplicates_input }}" />
       <input type="hidden" name="b_root" value="{{ root }}" />
@@ -67,15 +66,20 @@
   {% else %}
   <div class="table-tools">
     <input type="text" class="table-filter" id="similar-filter-rows" placeholder="filter this table…" />
+    <label class="field similarity-slider">
+      <span>similarity &le;</span>
+      <input type="range" id="similar-similarity-rows" min="0" max="6" value="6" />
+      <span class="hint" id="similar-similarity-rows-value">6</span>
+      <span class="hint">bits of pHash distance — lower is stricter; 0 = essentially identical structure</span>
+    </label>
     <span class="hint" id="similar-count-rows"></span>
   </div>
   <div class="table-scroll">
     <table class="compare-table">
-      <thead><tr><th>Keep (biggest file)</th><th>Copy</th><th>Verdict</th><th>Distance</th><th>Keep px</th><th>Copy px</th><th>Keep size</th><th>Copy size</th></tr></thead>
+      <thead><tr><th>Preview</th><th>Keep (biggest file)</th><th>Copy</th><th>Verdict</th><th>Distance</th><th>Keep px</th><th>Copy px</th><th>Keep size</th><th>Copy size</th><th>Size &Delta;</th></tr></thead>
       <tbody id="similar-table-rows"></tbody>
     </table>
   </div>
-  <button type="button" class="btn btn-small btn-secondary table-more" id="similar-more-rows" hidden>more…</button>
 
   <form method="post" action="/compare/purgatory" id="purgatory-form" class="merge-form">
     <input type="hidden" name="files" value="{{ candidates_input }}" />
