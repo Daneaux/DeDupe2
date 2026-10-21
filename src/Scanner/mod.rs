@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub mod cache;
 pub mod compare;
 pub mod scanner;

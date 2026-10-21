@@ -1,20 +1,5 @@
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScanDepth {
-    Shallow,
-    Deep,
-}
-
-impl ScanDepth {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ScanDepth::Shallow => "shallow",
-            ScanDepth::Deep => "deep",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileType {
     pub ext: String,
@@ -30,7 +15,6 @@ pub struct Volume {
     pub used_bytes: u64,
     pub scanned: bool,
     pub dirty: bool,
-    pub depth: ScanDepth,
     pub subdirs: Vec<String>,
 }
 
@@ -45,7 +29,6 @@ impl Volume {
             used_bytes: 0,
             scanned: false,
             dirty: false,
-            depth: ScanDepth::Shallow,
             subdirs: Vec::new(),
         }
     }
