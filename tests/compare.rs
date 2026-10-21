@@ -236,8 +236,8 @@ fn compare_sets_reports_the_four_numbers() {
 
 #[test]
 fn destination_root_ending_with_year_is_not_doubled() {
-    use dedupe2::filemover::{destination_for, Operation, transfer_originals_with_progress};
-    use dedupe2::exif::{creation_date, CreationDate};
+    use dedupe2::filemover::{destination_for, transfer_originals_with_progress, Operation};
+    use dedupe2::exif::CreationDate;
 
     let root = tempfile::tempdir().unwrap();
     let candidate = root.path().join("candidate/03-15 hawaii");
@@ -277,7 +277,7 @@ fn destination_root_ending_with_year_is_not_doubled() {
 
 #[test]
 fn full_date_source_folder_is_treated_as_date_not_description() {
-    use dedupe2::filemover::{destination_for, Operation, transfer_originals_with_progress};
+    use dedupe2::filemover::destination_for;
 
     let root = tempfile::tempdir().unwrap();
     let img = sample("jpg-exif-mod/image1.JPG"); // EXIF date 2022-08-17
@@ -440,7 +440,7 @@ fn rehome_never_overwrites_case_insensitive_name_collision() {
 #[test]
 fn transfer_uses_carried_dates_without_reextraction() {
     use dedupe2::filemover::{transfer_dated_with_progress, Operation};
-    use dedupe2::exif::{creation_date, CreationDate};
+    use dedupe2::exif::CreationDate;
 
     let root = tempfile::tempdir().unwrap();
     let candidate = root.path().join("candidate/09-27");
@@ -480,7 +480,7 @@ fn transfer_uses_carried_dates_without_reextraction() {
 #[test]
 fn transfer_falls_back_to_extraction_for_files_without_carried_dates() {
     use dedupe2::filemover::{transfer_dated_with_progress, Operation};
-    use dedupe2::exif::{creation_date, CreationDate};
+    use dedupe2::exif::CreationDate;
 
     let root = tempfile::tempdir().unwrap();
     let candidate = root.path().join("candidate");
@@ -578,7 +578,7 @@ fn deep_scan_treats_videos_differing_past_the_64kb_head_as_false_positives() {
     use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
 
     let root = tempfile::tempdir().unwrap();
-    let mut common = vec![0xABu8; 70 * 1024];
+    let common = vec![0xABu8; 70 * 1024];
 
     let mut a_payload = common.clone();
     a_payload.extend_from_slice(b"AAAA-tails");

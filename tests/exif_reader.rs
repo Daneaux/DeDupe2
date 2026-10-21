@@ -220,7 +220,7 @@ fn falls_back_to_xmp_in_jpeg_when_classic_exif_is_absent() {
     let path = root.path().join("xmpnoexif.jpg");
     let packet = xmp_packet(r#"xmp:CreateDate="2013-01-02T08:09:10""#);
     let mut jpg = vec![0xFF, 0xD8, 0xFF, 0xE1];
-    let len = (packet.len() as u16 + 2);
+    let len = packet.len() as u16 + 2;
     jpg.extend_from_slice(&len.to_be_bytes());
     jpg.extend_from_slice(b"http://ns.adobe.com/xap/1.0/\0");
     jpg.extend_from_slice(&packet);

@@ -81,3 +81,30 @@ fn fast_scan_returns_scanned_tree() {
     assert_eq!(rel, vec!["a.jpg".to_string(), "b.png".to_string()]);
     assert_eq!(tree.target.name, "test");
 }
+
+#[cfg(unix)]
+#[test]
+fn fast_scan_skips_symlinked_files_and_directory_loops() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_file(dir.path(), "real/a.jpg", b"real");
+    std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+
+    // File symlink and a directory symlink that points back at the tree.
+    symlink(dir.path().join("real/a.jpg"), dir.path().join("linked.jpg")).unwrap();
+    symlink(dir.path(), dir.path().join("sub/loop")).unwrap();
+
+    let target = test_target(dir.path(), &["jpg"]);
+    let files = collect_files(&target);
+    let names: Vec<String> = files
+        .iter()
+        .map(|(path, _, _)| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+
+    assert_eq!(names, vec!["a.jpg".to_string()], "only the real file is scanned");
+
+    // The tree walk must also terminate without following the loop.
+    let tree = fast_scan(&target);
+    assert_eq!(tree.files.len(), 1);
+}

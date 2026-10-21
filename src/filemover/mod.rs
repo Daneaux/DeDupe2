@@ -1862,3 +1862,69 @@ pub fn apply_similar_decisions_with_progress(
 
     outcome
 }
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    #[test]
+    fn unique_name_never_reuses_existing_names_case_insensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("IMG_0001.jpg"), b"x").unwrap();
+        std::fs::write(dir.path().join("IMG_0001 (1).JPG"), b"y").unwrap();
+
+        let taken = existing_names(dir.path());
+        assert_eq!(unique_name("img_0001.jpg", &taken), "img_0001 (2).jpg");
+        assert_eq!(unique_name("other.jpg", &taken), "other.jpg");
+    }
+
+    #[test]
+    fn unique_name_handles_files_without_an_extension() {
+        let taken: HashSet<String> = HashSet::from(["photo".to_string()]);
+        assert_eq!(unique_name("photo", &taken), "photo (1)");
+    }
+
+    #[test]
+    fn parse_date_rejects_out_of_range_and_short_values() {
+        assert_eq!(
+            parse_date(&CreationDate::DateCreated("2022:08:17 10:00:00".into())),
+            Some((2022, 8, 17))
+        );
+        assert_eq!(
+            parse_date(&CreationDate::DateCreated("2022-12-31".into())),
+            Some((2022, 12, 31))
+        );
+        assert_eq!(parse_date(&CreationDate::Unknown), None);
+        assert_eq!(
+            parse_date(&CreationDate::DateCreated("2022:13:01".into())),
+            None,
+            "month 13 is not a date"
+        );
+        assert_eq!(
+            parse_date(&CreationDate::DateCreated("2022:01:32".into())),
+            None,
+            "day 32 is not a date"
+        );
+        assert_eq!(
+            parse_date(&CreationDate::DateCreated("2022".into())),
+            None,
+            "a year alone is not enough"
+        );
+    }
+
+    #[test]
+    fn extract_event_strips_only_leading_date_tokens() {
+        assert_eq!(extract_event("2023-03-15 hawaii wedding"), "hawaii-wedding");
+        assert_eq!(extract_event("March 2023 trip"), "trip");
+        assert_eq!(extract_event("hawaii 2023"), "hawaii-2023");
+        assert_eq!(extract_event("03-15"), "");
+    }
+
+    #[test]
+    fn strip_full_date_prefix_requires_a_full_date() {
+        assert_eq!(strip_full_date_prefix("2023-03-15 hawaii"), Some(" hawaii"));
+        assert_eq!(strip_full_date_prefix("2023-3-15 haiti"), None);
+        assert_eq!(strip_full_date_prefix("spring 2023"), None);
+        assert_eq!(strip_full_date_prefix("2023-03-15"), Some(""));
+    }
+}

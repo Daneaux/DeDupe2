@@ -600,3 +600,60 @@ fn similar_decisions_keep_both_purge_both_and_take_bigger() {
     assert!(!b_small.exists());
     assert!(purgatory.join("keep-a.jpg").exists() || purgatory.join("keep-a (1).jpg").exists());
 }
+
+#[test]
+fn similarity_groups_keep_the_largest_copy_and_distances_are_symmetric() {
+    use std::collections::HashSet;
+
+    use dedupe2::image_reader::{
+        distance, distance_of, gradient_hash_of, phash, read_image, DHASH_SIMILAR_MAX_DISTANCE,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let original = sample("jpg-exif-mod/image1.JPG");
+    let keeper = root.path().join("original.jpg");
+    std::fs::copy(&original, &keeper).unwrap();
+    write_scaled(&original, &root.path().join("half.jpg"), 0.5, 85);
+    write_scaled(&original, &root.path().join("third.jpg"), 0.34, 70);
+
+    let cache = std::sync::Mutex::new(ScanCache::new());
+    let outcome = find_similar_with_progress(root.path(), &cache, &|_, _| {}).unwrap();
+    let group = &outcome.groups[0];
+
+    assert!(
+        !group.candidates.iter().any(|c| c.path == group.keeper),
+        "the keeper never appears among its own candidates"
+    );
+
+    let keeper_meta = std::fs::metadata(&group.keeper).unwrap();
+    let keeper_phash = phash(&group.keeper).expect("keeper phash");
+    let keeper_dhash = gradient_hash_of(&read_image(&group.keeper).unwrap()).expect("keeper dhash");
+
+    let mut seen = HashSet::new();
+    for candidate in &group.candidates {
+        assert!(seen.insert(candidate.path.clone()), "candidate listed twice");
+        let meta = std::fs::metadata(&candidate.path).unwrap();
+        assert!(meta.len() <= keeper_meta.len(), "candidates are not bigger than the keeper");
+        assert!(candidate.pixels < group.keeper_pixels, "candidate has fewer pixels");
+
+        let candidate_phash = phash(&candidate.path).expect("candidate phash");
+        assert_eq!(
+            distance_of(&keeper_phash, &candidate_phash),
+            candidate.distance,
+            "stored distance matches the recomputed one"
+        );
+        assert_eq!(
+            distance_of(&keeper_phash, &candidate_phash),
+            distance_of(&candidate_phash, &keeper_phash)
+        );
+
+        let candidate_dhash =
+            gradient_hash_of(&read_image(&candidate.path).unwrap()).expect("candidate dhash");
+        let d = distance(keeper_dhash, candidate_dhash);
+        assert_eq!(d, distance(candidate_dhash, keeper_dhash));
+        assert!(
+            d <= DHASH_SIMILAR_MAX_DISTANCE,
+            "downscale must stay within the dHash gate (distance {d})"
+        );
+    }
+}

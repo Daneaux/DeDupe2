@@ -92,3 +92,42 @@ fn upscaled_and_near_one_scale_copies_are_within_similar_distance() {
         );
     }
 }
+
+#[test]
+fn distance_is_symmetric_and_the_similarity_boundary_is_inclusive() {
+    let base = 0u64;
+    let at_boundary = (1u64 << SIMILAR_MAX_DISTANCE) - 1;
+    assert_eq!(distance(base, at_boundary), SIMILAR_MAX_DISTANCE);
+    assert!(
+        distance(base, (1u64 << (SIMILAR_MAX_DISTANCE + 1)) - 1) > SIMILAR_MAX_DISTANCE,
+        "one bit past the threshold is not similar"
+    );
+
+    let mut x = 0x0123_4567_89AB_CDEFu64;
+    for _ in 0..64 {
+        let y = x.rotate_left(7) ^ 0xDEAD_BEEF_CAFE_F00D;
+        assert_eq!(distance(x, y), distance(y, x));
+        x = y.wrapping_mul(6364136223846793005).wrapping_add(1);
+    }
+}
+
+#[test]
+fn gradient_hash_survives_downscaling() {
+    use dedupe2::image_reader::{
+        distance, gradient_hash_of, read_image, DHASH_SIMILAR_MAX_DISTANCE,
+    };
+
+    let source = sample("jpg-exif-mod/image1.JPG");
+    let dir = tempfile::tempdir().unwrap();
+    let small_path = dir.path().join("half.jpg");
+    std::fs::write(&small_path, rescaled_jpeg(&source, 0.5, 85)).unwrap();
+
+    let a = gradient_hash_of(&read_image(&source).unwrap()).expect("original dhash");
+    let b = gradient_hash_of(&read_image(&small_path).unwrap()).expect("scaled dhash");
+    let d = distance(a, b);
+    assert!(
+        d <= DHASH_SIMILAR_MAX_DISTANCE,
+        "gradient hash must be scale-stable (distance {d})"
+    );
+    assert_eq!(d, distance(b, a));
+}

@@ -2559,3 +2559,23 @@ pub fn app_with_state(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(state)
 }
+
+#[cfg(test)]
+mod regression_tests {
+    use super::truncate_rows;
+
+    #[test]
+    fn truncate_rows_reports_only_the_overflow() {
+        let (rows, more) = truncate_rows((0..20).collect::<Vec<_>>());
+        assert_eq!(rows.len(), 20);
+        assert_eq!(more, 0);
+
+        let (rows, more) = truncate_rows((0..21).collect::<Vec<_>>());
+        assert_eq!(rows.len(), 20);
+        assert_eq!(more, 1, "overflow count powers the 'more not shown' row");
+
+        let (rows, more) = truncate_rows(Vec::<u8>::new());
+        assert!(rows.is_empty());
+        assert_eq!(more, 0);
+    }
+}

@@ -1780,3 +1780,118 @@ fn resizable_table_machinery_is_wired() {
             .exists()
     );
 }
+
+#[tokio::test]
+async fn thumb_serves_the_fixture_and_rejects_non_images() {
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+
+    let res = app()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/thumb?path={}", urlencode(&fixture.display().to_string())))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers().get("content-type").unwrap(), "image/jpeg");
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..2], &[0xFF, 0xD8], "preview body is a JPEG");
+
+    for bad in ["/definitely/not/here.jpg", "/etc/passwd", "../../../etc/hosts"] {
+        let res = app()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/thumb?path={}", urlencode(bad)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "path {bad}");
+    }
+}
+
+#[tokio::test]
+async fn malformed_forms_never_return_a_server_error() {
+    let cases = [
+        ("/similar/run", "root=&compare="),
+        ("/similar/decide", "decisions=&a_root=&b_root=&purgatory="),
+        ("/similar/swap", "swaps=&a_root=&b_root=&purgatory="),
+        ("/compare/exif", "originals=&a=&destination="),
+        ("/compare/copy", "originals=&destination="),
+        ("/compare/deep", "pairs=&originals="),
+        ("/compare/transfer", "files=&destination="),
+        ("/compare/purgatory", "files=&b_root=&purgatory="),
+        ("/verify/rehome", "mismatches=&root="),
+        ("/organize/scan", "source=&destination="),
+        ("/organize/run", "files=&destination="),
+        ("/consolidate/preview", "dir="),
+        ("/consolidate/run", "dir="),
+        ("/sets/run", "a=&candidates="),
+    ];
+
+    for (uri, body) in cases {
+        let res = app().oneshot(form_request(uri, body.into())).await.unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{uri} returned a server error for empty input"
+        );
+    }
+
+    // Missing required fields are rejected by the extractor, not by a panic.
+    for uri in ["/similar/run", "/organize/run", "/verify/rehome"] {
+        let res = app().oneshot(form_request(uri, String::new())).await.unwrap();
+        assert_ne!(res.status(), StatusCode::INTERNAL_SERVER_ERROR, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn cache_status_for_an_unknown_tree_reports_zeroes() {
+    let res = app()
+        .oneshot(
+            Request::builder()
+                .uri("/cache-status?path=/definitely/not/a/tree")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = body_string(res.into_body()).await;
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    for key in ["cached_files", "shallow", "deep", "phash", "exif"] {
+        assert_eq!(value[key], 0, "{key} must be zero for an unknown tree: {body}");
+    }
+}
+
+#[tokio::test]
+async fn verify_rehome_moves_a_misfiled_photo_and_reverifies() {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path().to_path_buf();
+    let junk = root_path.join("junk");
+    std::fs::create_dir_all(&junk).unwrap();
+    let original = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+    let misfiled = junk.join("photo.jpg");
+    std::fs::copy(&original, &misfiled).unwrap();
+
+    // The fixture's true EXIF date is 2022-08-17.
+    let body = format!(
+        "mismatches={}&root={}&format={}",
+        urlencode(&format!("{}\t2022:08:17", misfiled.display())),
+        urlencode(&root_path.display().to_string()),
+        urlencode("YYYY/MM-DD")
+    );
+    let res = app().oneshot(form_request("/verify/rehome", body)).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let html = body_string(res.into_body()).await;
+    assert!(html.contains("Re-home Complete"), "{html}");
+    assert!(html.contains("event: done"), "{html}");
+
+    assert!(!misfiled.exists(), "misfiled source was moved");
+    assert!(root_path.join("2022/08-17/photo.jpg").exists());
+}

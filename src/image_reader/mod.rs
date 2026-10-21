@@ -38,6 +38,22 @@ enum FileType {
 }
 
 pub fn read_image(path: &Path) -> Result<ImageData, ImageReaderError> {
+    contain_decoder_panics(|| read_image_inner(path))
+}
+
+/// Decoders are third-party code and can panic on malformed files (rawler in
+/// particular). A panic must never escape as an unreadable file: catch it and
+/// report a normal decode error so scans keep going.
+fn contain_decoder_panics<T>(
+    decode: impl FnOnce() -> Result<T, ImageReaderError>,
+) -> Result<T, ImageReaderError> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)) {
+        Ok(result) => result,
+        Err(_) => Err(ImageReaderError::new("decoder panicked on a malformed file")),
+    }
+}
+
+fn read_image_inner(path: &Path) -> Result<ImageData, ImageReaderError> {
     let primary = detect_file_type(path);
     let primary_kind = primary.as_ref().ok().copied();
     let first = match primary {
@@ -54,6 +70,10 @@ pub fn read_image(path: &Path) -> Result<ImageData, ImageReaderError> {
 }
 
 pub fn read_image_data(path: &Path, limit: ReadLimit) -> Result<Vec<u8>, ImageReaderError> {
+    contain_decoder_panics(|| read_image_data_inner(path, limit))
+}
+
+fn read_image_data_inner(path: &Path, limit: ReadLimit) -> Result<Vec<u8>, ImageReaderError> {
     let primary = detect_file_type(path);
     let primary_kind = primary.as_ref().ok().copied();
     let first = match primary {
