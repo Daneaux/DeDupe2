@@ -25,10 +25,11 @@ pub fn organize_by_date(
     for (path, date) in files {
         let folder = match parse_date(date) {
             Some((year, month, day)) => {
+                let day = day.map(|d| format!("-{d:02}")).unwrap_or_default();
                 let name = if event.is_empty() {
-                    format!("{month:02}-{day:02}")
+                    format!("{month:02}{day}")
                 } else {
-                    format!("{month:02}-{day:02}-{event}")
+                    format!("{month:02}{day}-{event}")
                 };
                 dst_root.join(format!("{year:04}")).join(name)
             }

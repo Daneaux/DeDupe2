@@ -1,4 +1,7 @@
 mod ciff;
+mod folder_date;
+
+pub use folder_date::{parse_folder_date, FolderDate};
 
 pub const EXIF_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -142,30 +145,44 @@ fn creation_date_readers(path: &Path) -> CreationDate {
     CreationDate::Unknown
 }
 
-/// Derive a date from the file's folder layout: a `MM-DD` event folder under a
-/// `YYYY` year folder, or a folder named `YYYY-MM-DD` directly.
-pub fn folder_proxy_date(path: &Path) -> Option<CreationDate> {
-    let parent = path.parent()?.file_name()?.to_str()?.to_string();
+/// How many folders above a file are searched for a date in their name.
+/// Nearest wins, so `2013-07-30 Hawaii/raw/IMG.CR2` is dated by its
+/// grandparent, while a dated folder far above a library cannot leak into
+/// every file in it.
+pub const FOLDER_DATE_LEVELS: usize = 3;
 
-    if let Some((y, m, d)) = parse_ymd_folder(&parent) {
-        return Some(date_ymd(y, m, d));
-    }
-
-    if let Some((m, d)) = parse_md_folder(&parent) {
-        let grand = path.parent()?.parent()?.file_name()?.to_str()?.to_string();
-        if grand.len() == 4 && grand.bytes().all(|c| c.is_ascii_digit()) {
-            if let Ok(y) = grand.parse::<u32>() {
-                if (1..=12).contains(&m) && (1..=31).contains(&d) {
-                    return Some(date_ymd(y, m, d));
-                }
+/// The date implied by the folders a file sits in: the nearest of its
+/// [`FOLDER_DATE_LEVELS`] ancestors whose name holds a date (see
+/// [`parse_folder_date`] for the shapes), or a `MM-DD` event folder directly
+/// under a `YYYY` year folder.
+pub fn folder_date_of(path: &Path) -> Option<FolderDate> {
+    let mut dir = path.parent();
+    for _ in 0..FOLDER_DATE_LEVELS {
+        let folder = dir?;
+        let name = folder.file_name()?.to_string_lossy();
+        if let Some((date, _)) = parse_folder_date(&name) {
+            return Some(date);
+        }
+        if let Some((month, day)) = parse_md_folder(&name) {
+            let year = folder
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|n| n.to_str())
+                .filter(|n| n.len() == 4 && n.bytes().all(|c| c.is_ascii_digit()))
+                .and_then(|n| n.parse().ok());
+            if let Some(date) = year.and_then(|year| FolderDate::full(year, month, day)) {
+                return Some(date);
             }
         }
+        dir = folder.parent();
     }
     None
 }
 
-fn date_ymd(y: u32, m: u32, d: u32) -> CreationDate {
-    CreationDate::DateCreated(format!("{y:04}-{m:02}-{d:02}"))
+/// [`folder_date_of`] as a [`CreationDate`]: `YYYY-MM-DD`, or `YYYY-MM` for
+/// a month-only folder name.
+pub fn folder_proxy_date(path: &Path) -> Option<CreationDate> {
+    folder_date_of(path).map(|date| CreationDate::DateCreated(date.render()))
 }
 
 pub fn parse_ymd_folder(name: &str) -> Option<(u32, u32, u32)> {

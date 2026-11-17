@@ -173,3 +173,119 @@ fn plain_files_get_no_folder_proxy_date() {
     assert_eq!(folder_proxy_date(&photo), None);
     assert!(Path::new(&photo).exists());
 }
+
+/// Issue 1: every folder-name shape, through the real fallback on a file
+/// that has no date of its own.
+mod folder_name_dates {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn undated_file(root: &Path, rel: &str) -> PathBuf {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"no metadata here").unwrap();
+        path
+    }
+
+    fn proxy(root: &Path, rel: &str) -> Option<String> {
+        folder_proxy_date(&undated_file(root, rel)).map(|d| d.to_string())
+    }
+
+    #[test]
+    fn every_shape_in_the_issue_table() {
+        let dir = tempfile::tempdir().unwrap();
+        for (rel, expected) in [
+            ("Hawaii 2013-07-30/a.jpg", "2013-07-30"),
+            ("2013_07_30 Hawaii/a.jpg", "2013-07-30"),
+            ("2013.07.30 Hawaii/a.jpg", "2013-07-30"),
+            ("20130730 Hawaii/a.jpg", "2013-07-30"),
+            ("30-07-2013 Hawaii/a.jpg", "2013-07-30"),
+            ("2013-07 Hawaii/a.jpg", "2013-07"),
+            ("July 2013 trip/a.jpg", "2013-07"),
+            ("Jul 2013/a.jpg", "2013-07"),
+            ("30 July 2013/a.jpg", "2013-07-30"),
+            ("July 30 2013/a.jpg", "2013-07-30"),
+            ("2013-07-30 Hawaii/raw/IMG.CR2", "2013-07-30"),
+        ] {
+            assert_eq!(proxy(dir.path(), rel).as_deref(), Some(expected), "{rel}");
+        }
+    }
+
+    #[test]
+    fn the_nearest_dated_folder_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            proxy(dir.path(), "2013-07-30 Hawaii/2013-08-02 Maui/a.jpg").as_deref(),
+            Some("2013-08-02")
+        );
+        assert_eq!(
+            proxy(dir.path(), "2013/07-30 Hawaii/a.jpg").as_deref(),
+            Some("2013-07-30"),
+            "the YYYY/MM-DD layout still works"
+        );
+    }
+
+    #[test]
+    fn dates_far_above_the_file_do_not_leak_in() {
+        let dir = tempfile::tempdir().unwrap();
+        // Four folders up: beyond FOLDER_DATE_LEVELS (3).
+        assert_eq!(dedupe2::exif::FOLDER_DATE_LEVELS, 3);
+        assert_eq!(proxy(dir.path(), "2013-07-30 backup/a/b/c/x.jpg"), None);
+        assert_eq!(
+            proxy(dir.path(), "2013-07-30 backup/a/b/x.jpg").as_deref(),
+            Some("2013-07-30")
+        );
+    }
+
+    #[test]
+    fn ambiguous_and_non_date_names_stay_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        for rel in [
+            "07-08-2013 party/a.jpg",
+            "Trip 2013 - 1200 photos/a.jpg",
+            "Room 1012/a.jpg",
+            "2013-02-30 trip/a.jpg",
+        ] {
+            assert_eq!(proxy(dir.path(), rel), None, "{rel}");
+        }
+    }
+
+    #[test]
+    fn the_file_s_own_date_beats_any_folder_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let photo = dir.path().join("1999-01-01 wrong folder/image1.JPG");
+        std::fs::create_dir_all(photo.parent().unwrap()).unwrap();
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/jpg-exif-mod/image1.JPG"),
+            &photo,
+        )
+        .unwrap();
+
+        let date = dedupe2::exif::creation_date(&photo).to_string();
+        assert!(date.starts_with("2022-08-17"), "{date}");
+    }
+
+    #[test]
+    fn verify_compares_month_only_folders_by_month() {
+        use dedupe2::scanner::compare::verify_tree_dates;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/jpg-exif-mod/image1.JPG");
+        // image1.JPG was taken 2022-08-17.
+        for rel in ["August 2022/right.jpg", "July 2022/wrong.jpg"] {
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::copy(&fixture, &path).unwrap();
+        }
+
+        let outcome = verify_tree_dates(dir.path()).unwrap();
+
+        assert_eq!(outcome.ok, 1, "{outcome:?}");
+        assert_eq!(outcome.mismatches.len(), 1);
+        let mismatch = &outcome.mismatches[0];
+        assert!(mismatch.path.ends_with("July 2022/wrong.jpg"));
+        assert_eq!(mismatch.folder_date, "2022-07");
+        assert_eq!(mismatch.days_off, 47, "measured from 1 July");
+    }
+}

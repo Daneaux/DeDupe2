@@ -80,8 +80,14 @@ overwritten: name collisions get a ` (1)` suffix.
 
 Dates come from the file itself: EXIF, Canon CIFF, RAW metadata, XMP, movie
 track headers, and `exiftool` when it's installed. If a file has no date of
-its own, the folder name stands in, for example `2013/07-30 Hawaii` or
-`2013-07-30 Hawaii`.
+its own, the nearest dated folder within three levels above it stands in.
+Recognised folder names include `2013/07-30 Hawaii`, `Hawaii 2013-07-30`,
+`2013_07_30`, `2013.07.30`, `20130730`, `30-07-2013`, `30 July 2013`,
+`July 30, 2013`, and the month-only `2013-07` and `July 2013`.
+
+Ambiguous names such as `07-08-2013` (7 August or 8 July?) are left undated
+rather than guessed. Month-only dates go into a folder without a day: with
+`YYYY/MM-DD <folder description>`, `July 2013 trip` becomes `2013/07 trip`.
 
 ## The scan cache
 

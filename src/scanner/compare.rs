@@ -617,21 +617,6 @@ fn images_equal(a: &crate::image_reader::ImageData, b: &crate::image_reader::Ima
     }
 }
 
-/// The date a library folder layout implies for a file: `YYYY/MM-DD <desc>`
-/// (event folder under a year folder) or a `YYYY-MM-DD` folder directly.
-fn folder_implied_date(path: &Path) -> Option<(u32, u32, u32)> {
-    use crate::exif::{parse_md_folder, parse_ymd_folder};
-
-    let parent = path.parent()?.file_name()?.to_str()?.to_string();
-    if let Some((y, m, d)) = parse_ymd_folder(&parent) {
-        return Some((y, m, d));
-    }
-    let (m, d) = parse_md_folder(&parent)?;
-    let grand = path.parent()?.parent()?.file_name()?.to_str()?.to_string();
-    let y = grand.parse::<u32>().ok()?;
-    Some((y, m, d))
-}
-
 /// Pull (year, month, day) out of any creation-date rendering.
 fn ymd_from_string(s: &str) -> Option<(u32, u32, u32)> {
     let groups: Vec<u32> = s
@@ -733,7 +718,7 @@ fn verify_tree_dates_inner(
     cache: Option<&std::sync::Mutex<crate::scanner::cache::ScanCache>>,
     progress: Progress,
 ) -> Result<VerifyOutcome, Box<dyn std::error::Error>> {
-    use crate::exif::creation_dates_batch;
+    use crate::exif::{creation_dates_batch, folder_date_of, FolderDate};
 
     let files = collect_image_files(root)?;
     let total = files.len();
@@ -746,15 +731,10 @@ fn verify_tree_dates_inner(
         None => creation_dates_batch(&files, progress),
     };
     type Ymd = (u32, u32, u32);
-    let classifications: Vec<(Option<Ymd>, Option<Ymd>)> = files
+    let classifications: Vec<(Option<Ymd>, Option<FolderDate>)> = files
         .iter()
         .zip(dates)
-        .map(|(path, date)| {
-            (
-                ymd_from_string(&date.to_string()),
-                folder_implied_date(path),
-            )
-        })
+        .map(|(path, date)| (ymd_from_string(&date.to_string()), folder_date_of(path)))
         .collect();
 
     let mut outcome = VerifyOutcome {
@@ -774,20 +754,24 @@ fn verify_tree_dates_inner(
         }
     };
 
-    for (path, (exif_ymd, folder_ymd)) in files.iter().zip(classifications) {
-        let (status, days_off) = match (exif_ymd, folder_ymd) {
+    for (path, (exif_ymd, folder)) in files.iter().zip(classifications) {
+        let (status, days_off) = match (exif_ymd, folder) {
             (Some(e), Some(f)) => {
-                if e == f {
+                // A month-only folder (`2013-07`, `July 2013`) matches any day
+                // of that month; distances are measured from its first day.
+                let same = (e.0, e.1) == (f.year, f.month) && f.day.is_none_or(|d| d == e.2);
+                if same {
                     outcome.ok += 1;
                     (VerifyStatus::Ok, Some(0))
                 } else {
+                    let folder_ymd = (f.year, f.month, f.day.unwrap_or(1));
                     outcome.mismatches.push(VerifyMismatch {
                         path: path.clone(),
                         exif_date: format!("{:04}-{:02}-{:02}", e.0, e.1, e.2),
-                        folder_date: format!("{:04}-{:02}-{:02}", f.0, f.1, f.2),
-                        days_off: days_between(e, f),
+                        folder_date: f.render(),
+                        days_off: days_between(e, folder_ymd),
                     });
-                    (VerifyStatus::Mismatch, Some(days_between(e, f)))
+                    (VerifyStatus::Mismatch, Some(days_between(e, folder_ymd)))
                 }
             }
             (Some(_), None) => {
@@ -803,7 +787,7 @@ fn verify_tree_dates_inner(
         outcome.files.push(VerifiedFile {
             path: path.clone(),
             exif_date: exif_ymd.map(|(y, m, d)| format!("{y:04}-{m:02}-{d:02}")),
-            folder_date: folder_ymd.map(|(y, m, d)| format!("{y:04}-{m:02}-{d:02}")),
+            folder_date: folder.map(|f| f.render()),
             status,
             days_off,
         });

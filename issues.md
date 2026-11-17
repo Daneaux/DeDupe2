@@ -2,7 +2,8 @@
 
 ## 1. Recognise more folder-name date formats
 
-**Status:** open
+**Status:** done (2026-11-16). Parser in `src/exif/folder_date.rs`; see
+"Decisions" at the end of this issue.
 
 When a file has no capture date of its own (EXIF, CIFF, RAW or XMP), or reading
 its metadata times out, `creation_date()` falls back to a date taken from the
@@ -56,3 +57,36 @@ Only the file's immediate parent folder is checked:
 - Ambiguous orders and non-date numbers have tests showing they stay unknown.
 - The embedded file date still takes priority over any folder date.
 - `folder_description` handles the same shapes.
+
+### Decisions
+
+- **Ambiguous numeric orders:** decided only when one part can't be a
+  month: `30-07-2013` and `07-30-2013` are both 30 July. `07-08-2013` stays
+  unknown; equal parts (`07-07-2013`) are fine. Not a setting: there's no
+  silent guess to configure.
+- **Partial dates:** stored as `YYYY-MM` in `CreationDate`. Templates drop
+  `DD` along with one adjacent separator (`YYYY/MM-DD trip` gives
+  `2013/07 trip`), and `organize_by_date` names the folder `MM-event`.
+  Verify treats a month-only folder as matching any day of that month and
+  measures distances from its first day. Verify still treats a month-only
+  capture date as undated, since it isn't a real capture time.
+- **Searching ancestors:** nearest dated folder wins, searching up to
+  `FOLDER_DATE_LEVELS` (3) folders above the file. It doesn't stop at the
+  scan root yet: dates are cached per file, independent of which scan asked,
+  so a root-dependent answer would make the cache inconsistent. The depth
+  limit is what stops a date far above a library from leaking into every
+  file. Revisit if a real layout needs more depth.
+- **False positives:** years 1900–2100, months 1–12, days that exist in that
+  month (leap years included). A date must be bounded by the start or end of
+  the name or by a non-letter, non-digit character, so `IMG_20130730`
+  parses but `IMG20130730`, `201307301`, `Room 1012` and
+  `Trip 2013 - 1200 photos` don't. A malformed full date isn't downgraded:
+  `32 July 2013` and `2013-07_30` are unknown, not July. A full date
+  anywhere in the name beats a month-only one; otherwise the leftmost date
+  wins.
+- **Description extraction:** `folder_description` removes the date
+  wherever it sits, plus any punctuation that only belonged to the date, so
+  `Hawaii 2013-07-30` and `trip (July 30, 2013) beach` give `Hawaii` and
+  `trip beach`. An ambiguous name is kept whole (`07-08-2013 party`).
+- **Embedded dates first:** unchanged. The folder name is only a fallback
+  when the file has no date of its own, or reading it times out.
