@@ -78,9 +78,11 @@ fn dedupe_with_64kb_encoded_image_data_and_merge() {
     write_file(&lib_a, "2004/06-01/dinner.heic", &heic);
     write_file(&lib_b, "2004/06-01 Party/dinner-copy.heic", &heic_exif);
 
-    // Step 5: find duplicates via the 64 KB encoded-image-data hash, keep the
-    // shortest filename, merge same-date folders under the more descriptive
-    // name, and move the removed duplicates to a mirror tree at "purgatory".
+    // Step 5: find duplicates (64 KB encoded-image-data hash, then a full
+    // content proof), keep the copy carrying the most metadata (dated, then
+    // bigger, then shortest name), merge same-date folders under the more
+    // descriptive name, and move the removed duplicates to a mirror tree at
+    // "purgatory". The HEIC copy is 540 bytes bigger, so it is the keeper.
     let outcome: MergeOutcome = merge_libraries(
         &[lib_a.clone(), lib_b.clone()],
         &destination,
@@ -96,7 +98,7 @@ fn dedupe_with_64kb_encoded_image_data_and_merge() {
         kept,
         vec![
             "2004/05-12 Hawaii/beach.jpg",
-            "2004/06-01 Party/dinner.heic",
+            "2004/06-01 Party/dinner-copy.heic",
         ]
     );
 
@@ -108,7 +110,7 @@ fn dedupe_with_64kb_encoded_image_data_and_merge() {
         vec![
             "2004/05-12 Hawaii/beach-copy.jpg",
             "2004/05-12/vacation-photo.jpg",
-            "2004/06-01 Party/dinner-copy.heic",
+            "2004/06-01/dinner.heic",
         ]
     );
 

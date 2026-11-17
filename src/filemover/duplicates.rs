@@ -5,6 +5,7 @@
 //! identical by [`content_match`]; files that cannot be read or decoded are
 //! never grouped with anything they are not byte-identical to.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -13,6 +14,7 @@ use rayon::prelude::*;
 
 use super::naming::name_len;
 use super::Progress;
+use crate::exif::embedded_capture_date;
 use crate::Scanner::compare::{content_match, ContentMatch};
 use crate::Scanner::scan::{hash_image_data_parallel, FileHash};
 
@@ -21,16 +23,35 @@ const SHALLOW_PREFIX: usize = 64 * 1024;
 
 /// Partition `paths` (by index) into groups of files with identical content.
 /// Every file appears in exactly one group; singletons are unique files.
-/// Within a group the keeper comes first (shortest file name, then path);
-/// groups are ordered by their keeper's path.
+/// Within a group the keeper comes first (see [`keeper_rank`]); groups are
+/// ordered by their keeper's path.
 pub(super) fn confirmed_groups(paths: &[PathBuf], progress: Progress) -> Vec<Vec<usize>> {
     let hashes = hash_image_data_parallel(paths, SHALLOW_PREFIX, progress);
-    group_by_content(
+    let mut groups = group_by_content(
         paths,
         &hashes,
         &|a, b| content_match(a, b) == ContentMatch::Same,
         progress,
-    )
+    );
+    groups
+        .par_iter_mut()
+        .filter(|g| g.len() > 1)
+        .for_each(|group| {
+            group.sort_by_cached_key(|&i| keeper_rank(&paths[i]));
+        });
+    groups.sort_by(|a, b| paths[a[0]].cmp(&paths[b[0]]));
+    groups
+}
+
+/// Sort key for choosing which of several identical-content copies to keep
+/// (smallest first). Copies can differ only in metadata, so prefer the one
+/// that carries the most: an embedded capture date first, then the larger
+/// file (identical image data plus more bytes means more metadata), then
+/// the shorter name, then the path for determinism.
+fn keeper_rank(path: &Path) -> (bool, Reverse<u64>, usize, PathBuf) {
+    let undated = embedded_capture_date(path).is_none();
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    (undated, Reverse(size), name_len(path), path.to_path_buf())
 }
 
 /// [`confirmed_groups`] with the shallow hashes and the content test given.
@@ -100,6 +121,53 @@ mod tests {
         }
         groups.sort();
         groups
+    }
+
+    /// `src` with its EXIF (APP1) segment removed: identical image data, no
+    /// embedded date, fewer bytes.
+    fn strip_exif(src: &Path, dst: &Path) {
+        let bytes = std::fs::read(src).unwrap();
+        let at = bytes
+            .windows(2)
+            .position(|w| w == [0xFF, 0xE1])
+            .expect("fixture has an APP1 segment");
+        let len = u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]) as usize;
+        let mut out = bytes[..at].to_vec();
+        out.extend_from_slice(&bytes[at + 2 + len..]);
+        std::fs::write(dst, out).unwrap();
+    }
+
+    #[test]
+    fn the_copy_with_its_capture_date_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let dated = dir.path().join("IMG_0001 original with exif.jpg");
+        let stripped = dir.path().join("a.jpg");
+        std::fs::copy(fixture("jpg-exif-mod/image1.JPG"), &dated).unwrap();
+        strip_exif(&dated, &stripped);
+        assert!(embedded_capture_date(&stripped).is_none(), "precondition");
+
+        let paths = vec![stripped, dated];
+        let groups = confirmed_groups(&paths, &no_progress);
+
+        assert_eq!(
+            groups,
+            vec![vec![1, 0]],
+            "dated copy kept despite the longer name"
+        );
+    }
+
+    #[test]
+    fn among_dated_copies_the_bigger_one_is_kept() {
+        // Same image data and date; the bigger file carries more metadata.
+        let paths = vec![
+            fixture("HEIC-exif-mod/heic1.HEIC"),
+            fixture("HEIC-exif-mod/heic1-copy.heic"),
+        ];
+        assert_eq!(
+            confirmed_groups(&paths, &no_progress),
+            vec![vec![1, 0]],
+            "1489600 bytes beats 1489060"
+        );
     }
 
     #[test]

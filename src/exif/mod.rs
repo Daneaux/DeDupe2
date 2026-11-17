@@ -52,6 +52,16 @@ pub fn creation_date_with_timeout(path: &Path, timeout: Duration) -> CreationDat
     )
 }
 
+/// The capture date recorded *inside* the file (EXIF, CIFF, RAW, XMP), with
+/// the same per-file time limit. Unlike [`creation_date`] it never falls back
+/// to the folder name, so it tells whether a file carries its own date.
+pub fn embedded_capture_date(path: &Path) -> Option<CreationDate> {
+    match date_with_timeout(path, EXIF_TIMEOUT, creation_date_readers, CreationDate::Unknown) {
+        CreationDate::Unknown => None,
+        date => Some(date),
+    }
+}
+
 fn date_with_timeout(
     path: &Path,
     timeout: Duration,
