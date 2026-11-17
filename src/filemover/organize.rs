@@ -7,8 +7,8 @@ use super::safe_fs::relocate_file;
 use super::{FileMoverError, Operation, Progress};
 use crate::exif::CreationDate;
 use crate::image_reader::collect_image_files;
-use crate::Scanner::compare::{deep_scan_pairs_with_progress, DupPair};
-use crate::Scanner::scan::hash_image_data_parallel;
+use crate::scanner::compare::{deep_scan_pairs_with_progress, DupPair};
+use crate::scanner::scan::hash_image_data_parallel;
 
 /// `files` are `(source, capture date)` pairs: scanning deliberately does
 /// not extract dates, so callers that organize by date resolve them in a

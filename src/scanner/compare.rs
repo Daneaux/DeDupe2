@@ -7,7 +7,7 @@ use rayon::prelude::*;
 
 use crate::exif::{creation_dates_batch, CreationDate};
 use crate::image_reader::collect_image_files;
-use crate::Scanner::scan::{scan_trees, TreeSnapshot};
+use crate::scanner::scan::{scan_trees, TreeSnapshot};
 
 #[derive(Debug)]
 pub struct Comparison {
@@ -54,7 +54,7 @@ pub fn compare_folders_with_progress(
 pub fn compare_folders_cached(
     a: &Path,
     b: &Path,
-    cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
+    cache: &std::sync::Mutex<crate::scanner::cache::ScanCache>,
     progress: Progress,
 ) -> Result<Comparison, Box<dyn std::error::Error>> {
     compare_folders_inner(a, b, Some(cache), progress)
@@ -63,7 +63,7 @@ pub fn compare_folders_cached(
 fn compare_folders_inner(
     a: &Path,
     b: &Path,
-    cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
+    cache: Option<&std::sync::Mutex<crate::scanner::cache::ScanCache>>,
     progress: Progress,
 ) -> Result<Comparison, Box<dyn std::error::Error>> {
     let trees = scan_trees(
@@ -221,7 +221,7 @@ pub fn compare_sets_with_progress(
 pub fn compare_sets_cached(
     a: &Path,
     candidates: &[PathBuf],
-    cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
+    cache: &std::sync::Mutex<crate::scanner::cache::ScanCache>,
     progress: Progress,
 ) -> Result<SetComparison, Box<dyn std::error::Error>> {
     compare_sets_inner(a, candidates, Some(cache), progress)
@@ -230,7 +230,7 @@ pub fn compare_sets_cached(
 fn compare_sets_inner(
     a: &Path,
     candidates: &[PathBuf],
-    cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
+    cache: Option<&std::sync::Mutex<crate::scanner::cache::ScanCache>>,
     progress: Progress,
 ) -> Result<SetComparison, Box<dyn std::error::Error>> {
     let mut roots = Vec::with_capacity(candidates.len() + 1);
@@ -372,7 +372,7 @@ pub fn deep_scan_pairs(pairs: &[DupPair]) -> DeepScanOutcome {
 /// reused by later passes (and later deep scans).
 pub fn deep_scan_pairs_cached(
     pairs: &[DupPair],
-    cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
+    cache: &std::sync::Mutex<crate::scanner::cache::ScanCache>,
     progress: Progress,
 ) -> DeepScanOutcome {
     deep_scan_pairs_inner(pairs, Some(cache), progress)
@@ -389,7 +389,7 @@ pub fn deep_scan_pairs_with_progress(pairs: &[DupPair], progress: Progress) -> D
 
 fn deep_scan_pairs_inner(
     pairs: &[DupPair],
-    cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
+    cache: Option<&std::sync::Mutex<crate::scanner::cache::ScanCache>>,
     progress: Progress,
 ) -> DeepScanOutcome {
     let total = pairs.len();
@@ -468,7 +468,7 @@ fn deep_scan_pairs_inner(
 /// Cache-backed `is_true_duplicate`: every full hash and pixel key is
 /// computed once per file and reused afterwards.
 fn is_true_duplicate_cached(
-    cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
+    cache: &std::sync::Mutex<crate::scanner::cache::ScanCache>,
     a: &Path,
     b: &Path,
 ) -> Option<String> {
@@ -478,12 +478,12 @@ fn is_true_duplicate_cached(
 /// [`content_match`] through the scan cache: the same layers, with every
 /// full hash and pixel key computed once per file.
 pub fn content_match_cached(
-    cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
+    cache: &std::sync::Mutex<crate::scanner::cache::ScanCache>,
     a: &Path,
     b: &Path,
 ) -> ContentMatch {
     use crate::image_reader::is_video;
-    use crate::Scanner::cache::{full_bytes_cached, full_content_cached, pixel_cached};
+    use crate::scanner::cache::{full_bytes_cached, full_content_cached, pixel_cached};
 
     let (ha, hb) = (
         full_bytes_cached(cache, a).ok(),
@@ -722,7 +722,7 @@ pub fn verify_tree_dates_with_progress(
 /// `verify_tree_dates_with_progress` through the hierarchical scan cache.
 pub fn verify_tree_dates_cached(
     root: &Path,
-    cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
+    cache: &std::sync::Mutex<crate::scanner::cache::ScanCache>,
     progress: Progress,
 ) -> Result<VerifyOutcome, Box<dyn std::error::Error>> {
     verify_tree_dates_inner(root, Some(cache), progress)
@@ -730,7 +730,7 @@ pub fn verify_tree_dates_cached(
 
 fn verify_tree_dates_inner(
     root: &Path,
-    cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
+    cache: Option<&std::sync::Mutex<crate::scanner::cache::ScanCache>>,
     progress: Progress,
 ) -> Result<VerifyOutcome, Box<dyn std::error::Error>> {
     use crate::exif::creation_dates_batch;
@@ -742,7 +742,7 @@ fn verify_tree_dates_inner(
     // a single batched exiftool subprocess for the undatable remainder, then
     // folder proxies. Each in-process read is still individually time-limited.
     let dates = match cache {
-        Some(cache) => crate::Scanner::cache::creation_dates_cached(cache, &files, progress),
+        Some(cache) => crate::scanner::cache::creation_dates_cached(cache, &files, progress),
         None => creation_dates_batch(&files, progress),
     };
     let classifications: Vec<(Option<(u32, u32, u32)>, Option<(u32, u32, u32)>)> = files

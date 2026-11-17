@@ -7,7 +7,7 @@ use super::settings;
 /// already computed.
 #[derive(Clone, Default)]
 pub struct AppState {
-    pub cache: std::sync::Arc<std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
+    pub cache: std::sync::Arc<std::sync::Mutex<crate::scanner::cache::ScanCache>>,
     /// Where the cache is persisted; `None` keeps everything in memory
     /// (tests and throwaway runs). Changeable from the Settings tab.
     pub cache_path: std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
@@ -29,7 +29,7 @@ impl AppState {
     pub fn persistent() -> AppState {
         let settings = settings::Settings::load();
         let path = resolve_cache_path(&settings);
-        let cache = crate::Scanner::cache::ScanCache::load(&path);
+        let cache = crate::scanner::cache::ScanCache::load(&path);
         AppState {
             cache: std::sync::Arc::new(std::sync::Mutex::new(cache)),
             cache_path: std::sync::Arc::new(std::sync::Mutex::new(Some(path))),
@@ -57,7 +57,7 @@ impl AppState {
             return; // a save is already in flight
         }
         let result = {
-            let mut cache = crate::Scanner::cache::lock(&self.cache);
+            let mut cache = crate::scanner::cache::lock(&self.cache);
             if cache.dirty() {
                 cache.save(&path)
             } else {
@@ -73,7 +73,7 @@ impl AppState {
     /// Move the cache to a new location: the current (live) cache is written
     /// there and all future saves go to the new path.
     pub fn switch_cache_path(&self, new_path: PathBuf) -> std::io::Result<()> {
-        let mut cache = crate::Scanner::cache::lock(&self.cache);
+        let mut cache = crate::scanner::cache::lock(&self.cache);
         cache.save(&new_path)?;
         *self
             .cache_path
@@ -92,5 +92,5 @@ fn resolve_cache_path(settings: &settings::Settings) -> PathBuf {
     settings
         .cache_path
         .clone()
-        .unwrap_or_else(crate::Scanner::cache::default_cache_path)
+        .unwrap_or_else(crate::scanner::cache::default_cache_path)
 }

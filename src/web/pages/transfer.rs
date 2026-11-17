@@ -157,13 +157,13 @@ async fn compare_exif(
         };
         progress(0, originals.len());
         let dates =
-            crate::Scanner::cache::creation_dates_cached(&state.cache, &originals, &progress);
-        let dated: Vec<crate::Scanner::compare::DatedOriginal> = originals
+            crate::scanner::cache::creation_dates_cached(&state.cache, &originals, &progress);
+        let dated: Vec<crate::scanner::compare::DatedOriginal> = originals
             .iter()
             .cloned()
             .zip(dates)
             .map(
-                |(path, creation_date)| crate::Scanner::compare::DatedOriginal {
+                |(path, creation_date)| crate::scanner::compare::DatedOriginal {
                     path,
                     creation_date,
                 },
@@ -248,7 +248,7 @@ async fn compare_copy(
 }
 
 fn render_compare_exif(
-    dated: &[crate::Scanner::compare::DatedOriginal],
+    dated: &[crate::scanner::compare::DatedOriginal],
     destination_root: &str,
     format: &str,
     originals_input: &str,

@@ -142,17 +142,17 @@ async fn organize_scan(
             }
         };
         progress(0, files.len());
-        let before = crate::Scanner::cache::lock(&state.cache).stats();
-        let dates = crate::Scanner::cache::creation_dates_cached(&state.cache, &files, &progress);
-        let after = crate::Scanner::cache::lock(&state.cache).stats();
+        let before = crate::scanner::cache::lock(&state.cache).stats();
+        let dates = crate::scanner::cache::creation_dates_cached(&state.cache, &files, &progress);
+        let after = crate::scanner::cache::lock(&state.cache).stats();
         let cache_reused = after.reused.saturating_sub(before.reused);
         let cache_computed = after.computed.saturating_sub(before.computed);
-        let dated: Vec<crate::Scanner::compare::DatedOriginal> = files
+        let dated: Vec<crate::scanner::compare::DatedOriginal> = files
             .iter()
             .cloned()
             .zip(dates)
             .map(
-                |(path, creation_date)| crate::Scanner::compare::DatedOriginal {
+                |(path, creation_date)| crate::scanner::compare::DatedOriginal {
                     path,
                     creation_date,
                 },

@@ -13,8 +13,8 @@ use std::time::SystemTime;
 use rayon::prelude::*;
 
 use crate::image_reader::{collect_image_files, hash_image_data_status, ImageReaderError};
+use crate::scanner::cache::ScanCache;
 use crate::Progress;
-use crate::Scanner::cache::ScanCache;
 
 /// Hash result per file: `decoded` is `true` when the hash came from the
 /// decoder, `false` when the file was unreadable and the raw-byte fallback
@@ -123,7 +123,7 @@ pub fn scan_trees(
 
             let ((hash, decoded), reused) = match cache {
                 Some(cache) => {
-                    crate::Scanner::cache::shallow_hash_cached(cache, path, prefix_bytes)
+                    crate::scanner::cache::shallow_hash_cached(cache, path, prefix_bytes)
                 }
                 None => (hash_image_data_status(path, prefix_bytes), false),
             };

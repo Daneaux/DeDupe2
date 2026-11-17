@@ -109,7 +109,7 @@ fn consolidate_never_purges_unreadable_files() {
 
 #[test]
 fn deep_scan_never_confirms_a_pair_it_cannot_read() {
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::scanner::compare::{deep_scan_pairs, DupPair};
 
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("a.jpg");

@@ -15,8 +15,8 @@ use rayon::prelude::*;
 use super::naming::name_len;
 use super::Progress;
 use crate::exif::embedded_capture_date;
-use crate::Scanner::compare::{content_match, ContentMatch};
-use crate::Scanner::scan::{hash_image_data_parallel, FileHash};
+use crate::scanner::compare::{content_match, ContentMatch};
+use crate::scanner::scan::{hash_image_data_parallel, FileHash};
 
 /// Bytes of encoded image data the shallow hash covers.
 const SHALLOW_PREFIX: usize = 64 * 1024;

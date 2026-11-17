@@ -20,10 +20,10 @@ use crate::image_reader::{
     collect_image_files, distance, lossy_kind, Phash, DHASH_SIMILAR_MAX_DISTANCE,
     SIMILAR_MAX_DISTANCE,
 };
-use crate::Progress;
-use crate::Scanner::cache::{
+use crate::scanner::cache::{
     full_content_cached, perceptual_cached, shallow_hashes_cached, ScanCache,
 };
+use crate::Progress;
 
 /// One other copy of the same picture, with the evidence for its verdict.
 #[derive(Debug, Clone)]

@@ -1051,8 +1051,8 @@ async fn similar_tab_compare_mode_matches_between_two_trees() {
 
 #[tokio::test]
 async fn settings_tab_shows_and_moves_the_cache() {
+    use dedupe2::scanner::cache::ScanCache;
     use dedupe2::web::{app_with_state, AppState};
-    use dedupe2::Scanner::cache::ScanCache;
 
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("a");
@@ -1124,7 +1124,7 @@ async fn settings_tab_shows_and_moves_the_cache() {
     let html = body_string(res.into_body()).await;
     assert!(html.contains("Cache cleared"), "{html}");
     assert!(!new_cache.exists(), "cache file deleted");
-    assert_eq!(dedupe2::Scanner::cache::lock(&state.cache).stats().files, 0);
+    assert_eq!(dedupe2::scanner::cache::lock(&state.cache).stats().files, 0);
 }
 
 #[tokio::test]

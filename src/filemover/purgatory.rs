@@ -4,7 +4,7 @@ use super::naming::NameRegistry;
 use super::outcome::BatchOutcome;
 use super::safe_fs::{prune_empty_children, transfer_into};
 use super::{Operation, Progress};
-use crate::Scanner::compare::{content_match, ContentMatch};
+use crate::scanner::compare::{content_match, ContentMatch};
 
 /// Move the given files out of a tree into a side "purgatory" tree, keeping
 /// each file's path relative to `source_root` under `purgatory_root`. Every

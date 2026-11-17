@@ -62,7 +62,7 @@ async fn cache_status(
     Query(query): Query<CacheStatusQuery>,
 ) -> Json<CacheStatus> {
     let coverage =
-        crate::Scanner::cache::lock(&state.cache).branch_coverage(Path::new(query.path.trim()));
+        crate::scanner::cache::lock(&state.cache).branch_coverage(Path::new(query.path.trim()));
     Json(CacheStatus {
         cached_files: coverage.files,
         shallow: coverage.shallow,
@@ -74,13 +74,13 @@ async fn cache_status(
 
 fn render_settings(state: &AppState, message: Option<String>) -> String {
     let cache_path = state.cache_path();
-    let cached_files = crate::Scanner::cache::lock(&state.cache).stats().files;
-    let cache_dirty = crate::Scanner::cache::lock(&state.cache).dirty();
+    let cached_files = crate::scanner::cache::lock(&state.cache).stats().files;
+    let cache_dirty = crate::scanner::cache::lock(&state.cache).dirty();
     let cache_disk_bytes = cache_path
         .as_deref()
         .and_then(|p| std::fs::metadata(p).ok())
         .map(|m| m.len());
-    let default_path = crate::Scanner::cache::default_cache_path();
+    let default_path = crate::scanner::cache::default_cache_path();
     let tpl = SettingsTemplate {
         title: "DeDupe2",
         page: "settings",
@@ -116,7 +116,7 @@ async fn settings_save(
 ) -> Html<String> {
     let raw = form.cache_path.trim().to_string();
     let new_path = if raw.is_empty() {
-        crate::Scanner::cache::default_cache_path()
+        crate::scanner::cache::default_cache_path()
     } else {
         PathBuf::from(&raw)
     };
@@ -145,7 +145,7 @@ async fn settings_save(
 async fn settings_flush(State(state): State<AppState>) -> Html<String> {
     let message = match state.cache_path() {
         Some(path) => {
-            let mut cache = crate::Scanner::cache::lock(&state.cache);
+            let mut cache = crate::scanner::cache::lock(&state.cache);
             match cache.save(&path) {
                 Ok(()) => Some(format!("Cache written to {}", path.display())),
                 Err(e) => Some(format!("Could not write the cache: {e}")),
@@ -158,8 +158,8 @@ async fn settings_flush(State(state): State<AppState>) -> Html<String> {
 
 async fn settings_clear(State(state): State<AppState>) -> Html<String> {
     let removed = state.cache_path().map(|path| {
-        let mut cache = crate::Scanner::cache::lock(&state.cache);
-        *cache = crate::Scanner::cache::ScanCache::new();
+        let mut cache = crate::scanner::cache::lock(&state.cache);
+        *cache = crate::scanner::cache::ScanCache::new();
         std::fs::remove_file(&path).is_ok()
     });
     let message = match (state.cache_path(), removed) {

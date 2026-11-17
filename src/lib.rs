@@ -1,8 +1,7 @@
-#[allow(non_snake_case)]
-pub mod Scanner;
 pub mod exif;
 pub mod filemover;
 pub mod image_reader;
+pub mod scanner;
 pub mod web;
 
 /// Progress callback shared by every long-running operation:

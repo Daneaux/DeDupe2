@@ -12,14 +12,14 @@ use axum::Router;
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
 
+use crate::scanner::compare::{
+    compare_folders_cached, deep_scan_pairs_cached, Comparison, DupPair,
+};
 use crate::web::common::{
     parse_paths, require_dir, require_disjoint_trees, sse_stream, to_string, DupRowView, Msg,
     PathRowView, DEFAULT_FORMAT,
 };
 use crate::web::AppState;
-use crate::Scanner::compare::{
-    compare_folders_cached, deep_scan_pairs_cached, Comparison, DupPair,
-};
 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
@@ -129,7 +129,7 @@ async fn compare_run(
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
         tracing::info!("compare scan: {} vs {}", a.display(), b.display());
-        let before = crate::Scanner::cache::lock(&state.cache).stats();
+        let before = crate::scanner::cache::lock(&state.cache).stats();
         match compare_folders_cached(&a, &b, &state.cache, &progress) {
             Ok(cmp) => {
                 tracing::info!(
@@ -137,7 +137,7 @@ async fn compare_run(
                     cmp.duplicates.len(),
                     cmp.b_only.len()
                 );
-                let after = crate::Scanner::cache::lock(&state.cache).stats();
+                let after = crate::scanner::cache::lock(&state.cache).stats();
                 let html = render_compare(
                     &cmp,
                     &a_str,
@@ -213,9 +213,9 @@ async fn compare_deep(
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
         progress(0, pairs.len());
-        let before = crate::Scanner::cache::lock(&state.cache).stats();
+        let before = crate::scanner::cache::lock(&state.cache).stats();
         let outcome = deep_scan_pairs_cached(&pairs, &state.cache, &progress);
-        let after = crate::Scanner::cache::lock(&state.cache).stats();
+        let after = crate::scanner::cache::lock(&state.cache).stats();
         let cache_reused = after.reused.saturating_sub(before.reused);
         let cache_computed = after.computed.saturating_sub(before.computed);
 
@@ -265,7 +265,7 @@ struct DeepScanContext<'a> {
 }
 
 fn render_deep_scan(
-    outcome: &crate::Scanner::compare::DeepScanOutcome,
+    outcome: &crate::scanner::compare::DeepScanOutcome,
     ctx: &DeepScanContext,
 ) -> String {
     let removed: Vec<DeepPairView> = outcome

@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use dedupe2::Scanner::cache::{creation_dates_cached, lock, ScanCache};
-use dedupe2::Scanner::compare::{compare_folders_cached, deep_scan_pairs_cached, DupPair};
+use dedupe2::scanner::cache::{creation_dates_cached, lock, ScanCache};
+use dedupe2::scanner::compare::{compare_folders_cached, deep_scan_pairs_cached, DupPair};
 
 fn sample(rel: &str) -> Vec<u8> {
     std::fs::read(
@@ -14,7 +14,7 @@ fn sample(rel: &str) -> Vec<u8> {
 
 fn stats_delta(
     cache: &std::sync::Mutex<ScanCache>,
-    before: dedupe2::Scanner::cache::CacheStats,
+    before: dedupe2::scanner::cache::CacheStats,
 ) -> (usize, usize) {
     let after = lock(cache).stats();
     (
@@ -426,7 +426,7 @@ fn branch_files_counts_only_the_requested_subtree() {
 
 #[test]
 fn branch_coverage_reports_each_layer() {
-    use dedupe2::Scanner::cache::BranchCoverage;
+    use dedupe2::scanner::cache::BranchCoverage;
 
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("a.jpg");

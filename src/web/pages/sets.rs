@@ -12,11 +12,11 @@ use axum::Router;
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
 
+use crate::scanner::compare::{compare_sets_cached, SetComparison};
 use crate::web::common::{
     parse_paths, require_dir, require_disjoint_trees, sse_stream, to_string, Msg,
 };
 use crate::web::AppState;
-use crate::Scanner::compare::{compare_sets_cached, SetComparison};
 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
@@ -107,10 +107,10 @@ async fn sets_run(
         let progress = move |done: usize, total: usize| {
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
-        let before = crate::Scanner::cache::lock(&state.cache).stats();
+        let before = crate::scanner::cache::lock(&state.cache).stats();
         match compare_sets_cached(&a, &candidates, &state.cache, &progress) {
             Ok(cmp) => {
-                let after = crate::Scanner::cache::lock(&state.cache).stats();
+                let after = crate::scanner::cache::lock(&state.cache).stats();
                 let cache_reused = after.reused.saturating_sub(before.reused);
                 let cache_computed = after.computed.saturating_sub(before.computed);
                 let html = render_sets(&cmp, &a_str, cache_reused, cache_computed);

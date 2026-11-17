@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use dedupe2::exif::creation_date;
-use dedupe2::Scanner::compare::compare_folders;
+use dedupe2::scanner::compare::compare_folders;
 
 fn sample(rel: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -190,7 +190,7 @@ fn transfer_never_overwrites_preexisting_destination_files() {
 
 #[test]
 fn compare_sets_reports_the_four_numbers() {
-    use dedupe2::Scanner::compare::compare_sets;
+    use dedupe2::scanner::compare::compare_sets;
 
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("a");
@@ -251,8 +251,8 @@ fn compare_sets_reports_the_four_numbers() {
 
     // The cached path must produce identical numbers from one scan per tree,
     // and a repeated call must reuse every hash.
-    use dedupe2::Scanner::cache::ScanCache;
-    use dedupe2::Scanner::compare::compare_sets_cached;
+    use dedupe2::scanner::cache::ScanCache;
+    use dedupe2::scanner::compare::compare_sets_cached;
     use std::sync::Mutex;
 
     let cache = Mutex::new(ScanCache::new());
@@ -374,7 +374,7 @@ fn full_date_source_folder_is_treated_as_date_not_description() {
 
 #[test]
 fn verify_tree_flags_wrong_folder_placements() {
-    use dedupe2::Scanner::compare::verify_tree_dates;
+    use dedupe2::scanner::compare::verify_tree_dates;
 
     let root = tempfile::tempdir().unwrap();
     let lib = root.path().join("library");
@@ -631,7 +631,7 @@ fn synthetic_mp4(mdat_payload: &[u8]) -> Vec<u8> {
 
 #[test]
 fn deep_scan_treats_videos_differing_past_the_64kb_head_as_false_positives() {
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::scanner::compare::{deep_scan_pairs, DupPair};
 
     let root = tempfile::tempdir().unwrap();
     let common = vec![0xABu8; 70 * 1024];
@@ -668,7 +668,7 @@ fn deep_scan_treats_videos_differing_past_the_64kb_head_as_false_positives() {
 
 #[test]
 fn deep_scan_keeps_videos_with_identical_content() {
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::scanner::compare::{deep_scan_pairs, DupPair};
 
     let root = tempfile::tempdir().unwrap();
     let payload = [0xCDu8; 80 * 1024];
@@ -689,7 +689,7 @@ fn deep_scan_keeps_videos_with_identical_content() {
 
 #[test]
 fn deep_scan_keeps_photos_identical_except_metadata() {
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::scanner::compare::{deep_scan_pairs, DupPair};
 
     let root = tempfile::tempdir().unwrap();
     let a_path = root.path().join("a.jpg");
@@ -766,7 +766,7 @@ fn raw_and_jpg_sidecars_are_never_grouped_as_duplicates() {
 
 #[test]
 fn deep_scan_confirms_byte_identical_duplicates_in_cross_product_groups() {
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::scanner::compare::{deep_scan_pairs, DupPair};
 
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("a");
@@ -805,7 +805,7 @@ fn deep_scan_confirms_byte_identical_duplicates_in_cross_product_groups() {
 
 #[test]
 fn deep_scan_confirms_byte_identical_raw_pairs() {
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::scanner::compare::{deep_scan_pairs, DupPair};
 
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("a");
@@ -833,7 +833,7 @@ fn deep_scan_confirms_byte_identical_raw_pairs() {
 #[ignore]
 fn fixed_0857_pair_shallow_then_full_hash_confirmed() {
     use dedupe2::image_reader::{hash_all_bytes, hash_image_data_all, hash_image_data_status};
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::scanner::compare::{deep_scan_pairs, DupPair};
 
     let a = std::path::Path::new(
         "/Users/dannydalal/4tbext/SrcImageFolders/Single Events/Original 2000-2019/2013/2013-07-30/IMG_0857.MOV",
@@ -883,7 +883,7 @@ fn head_shared_video(tail: &[u8]) -> Vec<u8> {
 
 #[test]
 fn deep_scan_reports_no_false_positives_or_originals_when_every_b_matches_some_a() {
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::scanner::compare::{deep_scan_pairs, DupPair};
 
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("a");
@@ -935,7 +935,7 @@ fn deep_scan_reports_no_false_positives_or_originals_when_every_b_matches_some_a
 
 #[test]
 fn deep_scan_keeps_false_positive_when_b_matches_no_a_at_all() {
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::scanner::compare::{deep_scan_pairs, DupPair};
 
     let root = tempfile::tempdir().unwrap();
     // Two A files, one B; B shares the head with both but duplicates neither.
@@ -977,7 +977,7 @@ fn deep_scan_keeps_false_positive_when_b_matches_no_a_at_all() {
 
 #[test]
 fn deep_scan_keeps_false_positive_rows_for_b_matching_nothing_even_with_confirmed_siblings() {
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::scanner::compare::{deep_scan_pairs, DupPair};
 
     let root = tempfile::tempdir().unwrap();
     // Two A files, two B files: b1 duplicates a1; b2 matches NOTHING.
@@ -1019,7 +1019,7 @@ fn synthesize_m2ts(content: &[u8], timestamp_base: u32) -> Vec<u8> {
 
 #[test]
 fn mts_files_are_scanned_compared_and_deep_scanned() {
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::scanner::compare::{deep_scan_pairs, DupPair};
 
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("a");
@@ -1103,7 +1103,7 @@ fn avi_copies_pair_across_trees_despite_metadata_differences() {
     assert_eq!(cmp.duplicates.len(), 1, "avi must pair: {cmp:?}");
     assert!(cmp.unreadable.is_empty());
 
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
+    use dedupe2::scanner::compare::{deep_scan_pairs, DupPair};
     let group = &cmp.duplicates[0];
     let outcome = deep_scan_pairs(&[DupPair {
         a: group.a[0].clone(),
@@ -1143,8 +1143,8 @@ fn synthesize_avi(movi: &[u8], idit: &[u8]) -> Vec<u8> {
 
 #[test]
 fn cached_compare_matches_uncached_and_reuses_hashes() {
-    use dedupe2::Scanner::cache::ScanCache;
-    use dedupe2::Scanner::compare::compare_folders_cached;
+    use dedupe2::scanner::cache::ScanCache;
+    use dedupe2::scanner::compare::compare_folders_cached;
     use std::sync::Mutex;
 
     let a = tempfile::tempdir().unwrap();
@@ -1176,8 +1176,8 @@ fn cached_compare_matches_uncached_and_reuses_hashes() {
 
 #[test]
 fn compare_snapshots_classifies_without_touching_the_filesystem() {
-    use dedupe2::Scanner::compare::compare_snapshots;
-    use dedupe2::Scanner::scan::{ScanStats, ScannedFile, TreeSnapshot};
+    use dedupe2::scanner::compare::compare_snapshots;
+    use dedupe2::scanner::scan::{ScanStats, ScannedFile, TreeSnapshot};
     use std::time::SystemTime;
 
     fn snapshot(root: &str, files: &[(&str, u64, bool)]) -> TreeSnapshot {

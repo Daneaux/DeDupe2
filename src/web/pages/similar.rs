@@ -17,14 +17,14 @@ use crate::exif::CreationDate;
 use crate::filemover::{
     apply_similar_decisions_with_progress, swap_better_copies_with_progress, SimilarDecision,
 };
+use crate::scanner::similar::{
+    find_similar_between_with_progress, find_similar_with_progress, SimilarCompareOutcome,
+    SimilarOutcome,
+};
 use crate::web::common::{
     require_dir, require_disjoint_trees, sse_stream, to_string, Msg, DEFAULT_FORMAT,
 };
 use crate::web::AppState;
-use crate::Scanner::similar::{
-    find_similar_between_with_progress, find_similar_with_progress, SimilarCompareOutcome,
-    SimilarOutcome,
-};
 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
@@ -179,7 +179,7 @@ async fn similar_run(
         let progress = move |done: usize, total: usize| {
             let _ = progress_tx.send(Msg::Progress(done, total));
         };
-        let before = crate::Scanner::cache::lock(&state.cache).stats();
+        let before = crate::scanner::cache::lock(&state.cache).stats();
 
         let html = match compare_root {
             Some(other) => {
@@ -196,12 +196,12 @@ async fn similar_run(
                         return;
                     }
                 };
-                let after = crate::Scanner::cache::lock(&state.cache).stats();
+                let after = crate::scanner::cache::lock(&state.cache).stats();
                 // EXIF dates for the B copies power the per-row destination
                 // preview and the keep-both action (cache-backed).
                 let b_paths: Vec<PathBuf> = outcome.matches.iter().map(|m| m.b.clone()).collect();
                 let dates =
-                    crate::Scanner::cache::creation_dates_cached(&state.cache, &b_paths, &progress);
+                    crate::scanner::cache::creation_dates_cached(&state.cache, &b_paths, &progress);
                 render_similar_compare(
                     &outcome,
                     &root_str,
@@ -219,7 +219,7 @@ async fn similar_run(
                         return;
                     }
                 };
-                let after = crate::Scanner::cache::lock(&state.cache).stats();
+                let after = crate::scanner::cache::lock(&state.cache).stats();
                 render_similar(
                     &outcome,
                     &root_str,

@@ -14,9 +14,9 @@ use tokio::sync::mpsc;
 use tokio_stream::Stream;
 
 use crate::filemover::{plan_rehome, rehome_verified, RehomeOutcome};
+use crate::scanner::compare::{verify_tree_dates_cached, VerifyOutcome};
 use crate::web::common::{require_dir, sse_stream, to_string, Msg, DEFAULT_FORMAT};
 use crate::web::AppState;
-use crate::Scanner::compare::{verify_tree_dates_cached, VerifyOutcome};
 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()

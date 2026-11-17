@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use dedupe2::Scanner::cache::{lock, ScanCache};
-use dedupe2::Scanner::similar::find_similar_with_progress;
+use dedupe2::scanner::cache::{lock, ScanCache};
+use dedupe2::scanner::similar::find_similar_with_progress;
 
 fn sample(rel: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -234,7 +234,7 @@ fn same_size_recompression_keeps_the_higher_quality_copy() {
 
 #[test]
 fn cross_tree_compare_flags_only_worse_b_copies() {
-    use dedupe2::Scanner::similar::find_similar_between_with_progress;
+    use dedupe2::scanner::similar::find_similar_between_with_progress;
 
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("library");
@@ -337,7 +337,7 @@ fn exact_duplicates_are_eliminated_before_similarity_in_self_mode() {
 
 #[test]
 fn cross_tree_compare_never_flags_a_better_b_copy() {
-    use dedupe2::Scanner::similar::find_similar_between_with_progress;
+    use dedupe2::scanner::similar::find_similar_between_with_progress;
 
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("library");
@@ -487,7 +487,7 @@ fn black_and_white_copy_is_not_similar_to_its_color_original() {
 
 #[test]
 fn cross_tree_compare_ignores_black_and_white_counterparts() {
-    use dedupe2::Scanner::similar::find_similar_between_with_progress;
+    use dedupe2::scanner::similar::find_similar_between_with_progress;
 
     let root = tempfile::tempdir().unwrap();
     let a_root = root.path().join("library");
@@ -521,7 +521,7 @@ fn cross_tree_compare_ignores_black_and_white_counterparts() {
 #[test]
 #[ignore]
 fn known_false_pair_is_not_similar() {
-    use dedupe2::Scanner::similar::find_similar_between_with_progress;
+    use dedupe2::scanner::similar::find_similar_between_with_progress;
 
     let a_file = std::path::Path::new("/Users/dannydalal/4tbext/AllPhotos/2017/05-12/IMG_0173.JPG");
     let b_file = std::path::Path::new(

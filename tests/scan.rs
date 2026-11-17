@@ -3,8 +3,8 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
 
-use dedupe2::Scanner::cache::ScanCache;
-use dedupe2::Scanner::scan::{scan_tree, scan_trees};
+use dedupe2::scanner::cache::ScanCache;
+use dedupe2::scanner::scan::{scan_tree, scan_trees};
 
 fn write_file(dir: &Path, rel: &str, contents: &[u8]) {
     let path = dir.join(rel);
