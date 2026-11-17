@@ -48,8 +48,12 @@ fn transfer_keeps_source_when_destination_is_unwritable() {
     std::fs::create_dir_all(&destination).unwrap();
     set_mode(&destination, 0o555);
 
-    let outcome =
-        transfer_files_with_progress(&[source.clone()], &destination, Operation::Move, &|_, _| {});
+    let outcome = transfer_files_with_progress(
+        std::slice::from_ref(&source),
+        &destination,
+        Operation::Move,
+        &|_, _| {},
+    );
 
     set_mode(&destination, 0o755);
 
@@ -74,8 +78,12 @@ fn transfer_reports_unreadable_source_and_keeps_it_in_place() {
     }
 
     let destination = root.path().join("out");
-    let outcome =
-        transfer_files_with_progress(&[source.clone()], &destination, Operation::Move, &|_, _| {});
+    let outcome = transfer_files_with_progress(
+        std::slice::from_ref(&source),
+        &destination,
+        Operation::Move,
+        &|_, _| {},
+    );
 
     set_mode(&source, 0o644);
 
@@ -223,8 +231,12 @@ fn transfer_collision_renames_instead_of_overwriting() {
     std::fs::create_dir_all(&destination).unwrap();
     std::fs::write(destination.join("photo.jpg"), b"existing").unwrap();
 
-    let outcome =
-        transfer_files_with_progress(&[source.clone()], &destination, Operation::Copy, &|_, _| {});
+    let outcome = transfer_files_with_progress(
+        std::slice::from_ref(&source),
+        &destination,
+        Operation::Copy,
+        &|_, _| {},
+    );
 
     assert_eq!(outcome.moved, 1, "{outcome:?}");
     assert_eq!(outcome.renamed_on_collision, 1);

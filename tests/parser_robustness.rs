@@ -35,7 +35,7 @@ fn corrupt_containers_never_panic_and_never_produce_previews() {
     let mut mts = Vec::new();
     for _ in 0..3 {
         mts.push(0x47);
-        mts.extend(std::iter::repeat(0xAB).take(187));
+        mts.extend(std::iter::repeat_n(0xAB, 187));
     }
 
     let cases: Vec<(&str, Vec<u8>)> = vec![

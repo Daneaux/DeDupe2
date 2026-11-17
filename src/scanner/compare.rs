@@ -745,7 +745,8 @@ fn verify_tree_dates_inner(
         Some(cache) => crate::scanner::cache::creation_dates_cached(cache, &files, progress),
         None => creation_dates_batch(&files, progress),
     };
-    let classifications: Vec<(Option<(u32, u32, u32)>, Option<(u32, u32, u32)>)> = files
+    type Ymd = (u32, u32, u32);
+    let classifications: Vec<(Option<Ymd>, Option<Ymd>)> = files
         .iter()
         .zip(dates)
         .map(|(path, date)| {
@@ -765,8 +766,7 @@ fn verify_tree_dates_inner(
         files: Vec::with_capacity(files.len()),
     };
 
-    let as_date =
-        |(y, m, d): (u32, u32, u32)| chrono::NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32);
+    let as_date = |(y, m, d): (u32, u32, u32)| chrono::NaiveDate::from_ymd_opt(y as i32, m, d);
     let days_between = |a: (u32, u32, u32), b: (u32, u32, u32)| -> i64 {
         match (as_date(a), as_date(b)) {
             (Some(da), Some(db)) => da.signed_duration_since(db).num_days().abs(),

@@ -159,7 +159,7 @@ pub fn find_similar_with_progress(
     // already narrowed to lossy images).
     let n = entries.len();
     let mut parent: Vec<usize> = (0..n).collect();
-    fn find(parent: &mut Vec<usize>, mut x: usize) -> usize {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
         while parent[x] != x {
             parent[x] = parent[parent[x]];
             x = parent[x];

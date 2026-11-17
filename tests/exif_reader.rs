@@ -129,10 +129,12 @@ fn rawler_capture_date_prefers_datetime_original_over_recent_modify_date() {
 
     // The feared case: the file was edited yesterday (recent ModifyDate) but
     // was taken in 2010. ModifyDate must lose.
-    let mut exif = rawler::exif::Exif::default();
-    exif.date_time_original = Some("2010:05:30 06:59:32".into());
-    exif.create_date = Some("2010:05:30 06:59:32".into());
-    exif.modify_date = Some("2026:09:10 19:00:00".into());
+    let exif = rawler::exif::Exif {
+        date_time_original: Some("2010:05:30 06:59:32".into()),
+        create_date: Some("2010:05:30 06:59:32".into()),
+        modify_date: Some("2026:09:10 19:00:00".into()),
+        ..Default::default()
+    };
 
     let date = select_capture_date(&exif);
     assert!(
@@ -141,8 +143,10 @@ fn rawler_capture_date_prefers_datetime_original_over_recent_modify_date() {
     );
 
     // Fallback chain: only ModifyDate present -> it is used.
-    let mut exif = rawler::exif::Exif::default();
-    exif.modify_date = Some("2026:09:10 19:00:00".into());
+    let exif = rawler::exif::Exif {
+        modify_date: Some("2026:09:10 19:00:00".into()),
+        ..Default::default()
+    };
     let date = select_capture_date(&exif);
     assert!(
         matches!(date, Some(CreationDate::DateCreated(ref s)) if s.starts_with("2026-09-10")),
@@ -150,9 +154,11 @@ fn rawler_capture_date_prefers_datetime_original_over_recent_modify_date() {
     );
 
     // Priority between the two capture dates: DateTimeOriginal wins.
-    let mut exif = rawler::exif::Exif::default();
-    exif.date_time_original = Some("2010:05:30 06:59:32".into());
-    exif.create_date = Some("2011:01:01 00:00:00".into());
+    let exif = rawler::exif::Exif {
+        date_time_original: Some("2010:05:30 06:59:32".into()),
+        create_date: Some("2011:01:01 00:00:00".into()),
+        ..Default::default()
+    };
     let date = select_capture_date(&exif);
     assert!(
         matches!(date, Some(CreationDate::DateCreated(ref s)) if s.starts_with("2010-05-30")),
@@ -326,7 +332,7 @@ fn reads_iptc_date_through_exiftool_binary() {
     std::fs::write(&path, &v).unwrap();
 
     // The exiftool path is only reachable through the batched resolver.
-    let dates = creation_dates_batch(&[path.clone()], &|_, _| {});
+    let dates = creation_dates_batch(std::slice::from_ref(&path), &|_, _| {});
     assert_eq!(dates[0], CreationDate::DateCreated("2011-11-05".into()));
 }
 

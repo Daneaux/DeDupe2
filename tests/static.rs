@@ -69,7 +69,7 @@ fn referenced_static_assets_exist() {
         while let Some(idx) = rest.find("/static/") {
             let after = &rest[idx..];
             let end = after
-                .find(|c: char| c == '"' || c == '\'' || c == '?' || c == ' ' || c == '\n')
+                .find(['"', '\'', '?', ' ', '\n'])
                 .unwrap_or(after.len());
             let rel = &after[..end];
             if !rel.contains('{') {

@@ -394,7 +394,7 @@ fn verify_tree_flags_wrong_folder_placements() {
     std::fs::write(lib.join("misc/in_misc.jpg"), &img).unwrap();
 
     // UNDATED: no exif, folder does not encode a date.
-    std::fs::write(lib.join("misc/noexif.jpg"), &fake).unwrap();
+    std::fs::write(lib.join("misc/noexif.jpg"), fake).unwrap();
 
     let outcome = verify_tree_dates(&lib).unwrap();
 
@@ -501,7 +501,7 @@ fn transfer_uses_carried_dates_without_reextraction() {
     // This file's real EXIF date is 2022-08-17...
     std::fs::write(
         candidate.join("IMG_0500.jpg"),
-        &sample("jpg-exif-mod/image1.JPG"),
+        sample("jpg-exif-mod/image1.JPG"),
     )
     .unwrap();
 
@@ -540,7 +540,7 @@ fn transfer_falls_back_to_extraction_for_files_without_carried_dates() {
     std::fs::create_dir_all(&candidate).unwrap();
     std::fs::write(
         candidate.join("dated.jpg"),
-        &sample("jpg-exif-mod/image1.JPG"),
+        sample("jpg-exif-mod/image1.JPG"),
     )
     .unwrap();
     std::fs::write(candidate.join("undated.jpg"), b"\xFF\xD8 no exif").unwrap();
@@ -584,7 +584,7 @@ fn description_tokens_survive_date_substitution() {
     // become the month number.
     let candidate = root.path().join("candidate/MM");
     std::fs::create_dir_all(&candidate).unwrap();
-    std::fs::write(candidate.join("x.jpg"), &sample("jpg-exif-mod/image1.JPG")).unwrap();
+    std::fs::write(candidate.join("x.jpg"), sample("jpg-exif-mod/image1.JPG")).unwrap();
 
     let date = CreationDate::DateCreated("2012-08-17 12:00:00".into());
     let target = destination_for(
@@ -1009,9 +1009,7 @@ fn synthesize_m2ts(content: &[u8], timestamp_base: u32) -> Vec<u8> {
         out.extend_from_slice(&ts.to_be_bytes());
         out.push(0x47);
         out.extend_from_slice(chunk);
-        for _ in chunk.len()..187 {
-            out.push(0);
-        }
+        out.resize(out.len() + 187 - chunk.len(), 0);
         ts += 1000 + i as u32;
     }
     out

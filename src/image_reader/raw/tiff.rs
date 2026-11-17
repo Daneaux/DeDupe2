@@ -45,7 +45,7 @@ fn collect<'a>(ifd: &'a IFD, out: &mut Vec<&'a IFD>) {
 }
 
 fn track(best: &mut Option<Vec<u8>>, bytes: Vec<u8>) {
-    if best.as_ref().map_or(true, |b| bytes.len() > b.len()) {
+    if best.as_ref().is_none_or(|b| bytes.len() > b.len()) {
         *best = Some(bytes);
     }
 }

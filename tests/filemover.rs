@@ -193,8 +193,12 @@ fn purgatory_move_renames_collisions_and_never_overwrites() {
     std::fs::create_dir_all(purg.path().join("ev")).unwrap();
     std::fs::write(purg.path().join("ev/IMG_0500.JPG"), b"old bytes").unwrap();
 
-    let outcome =
-        move_to_purgatory_with_progress(&[src_file.clone()], root, purg.path(), &|_, _| {});
+    let outcome = move_to_purgatory_with_progress(
+        std::slice::from_ref(&src_file),
+        root,
+        purg.path(),
+        &|_, _| {},
+    );
 
     assert_eq!(outcome.moved, 1);
     assert_eq!(outcome.renamed_on_collision, 1);
@@ -420,7 +424,12 @@ fn table_transfer_copies_verifies_and_moves_flat() {
 
     // Move: verified then removed.
     let dest2 = root.path().join("export2");
-    let outcome = transfer_files_with_progress(&[a.clone()], &dest2, Operation::Move, &|_, _| {});
+    let outcome = transfer_files_with_progress(
+        std::slice::from_ref(&a),
+        &dest2,
+        Operation::Move,
+        &|_, _| {},
+    );
     assert_eq!(outcome.moved, 1, "{outcome:?}");
     assert!(!a.exists(), "move removes the source after verification");
     assert_eq!(

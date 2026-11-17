@@ -607,8 +607,9 @@ fn settings_round_trip_and_tolerate_corruption() {
     // Missing file: defaults.
     assert_eq!(Settings::load_from(&path).cache_path, None);
 
-    let mut settings = Settings::default();
-    settings.cache_path = Some(dir.path().join("cache.bin"));
+    let settings = Settings {
+        cache_path: Some(dir.path().join("cache.bin")),
+    };
     settings.save_to(&path).unwrap();
     assert_eq!(
         Settings::load_from(&path).cache_path,

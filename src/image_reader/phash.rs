@@ -162,7 +162,7 @@ pub(super) fn to_dynamic(image: &ImageData) -> Option<image::DynamicImage> {
     if width == 0 || height == 0 || image.cpp == 0 {
         return None;
     }
-    let pixels = (image.width * image.height) as usize;
+    let pixels = image.width * image.height;
     let gray: Vec<u8> = match &image.data {
         PixelData::U8(bytes) => match image.cpp {
             3 => {

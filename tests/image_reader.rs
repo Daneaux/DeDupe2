@@ -467,9 +467,7 @@ fn synthesize_m2ts(content: &[u8], timestamp_base: u32) -> Vec<u8> {
         out.extend_from_slice(&ts.to_be_bytes());
         out.push(0x47);
         out.extend_from_slice(chunk);
-        for _ in chunk.len()..187 {
-            out.push(0);
-        }
+        out.resize(out.len() + 187 - chunk.len(), 0);
         ts += 1000 + i as u32;
     }
     out

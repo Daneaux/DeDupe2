@@ -67,21 +67,19 @@ fn port_from(mut args: impl Iterator<Item = String>, env: Option<String>) -> Res
             .parse::<u16>()
             .map_err(|_| format!("invalid port: {value:?}"))
     };
-    while let Some(arg) = args.next() {
-        if let Some(value) = arg.strip_prefix("--port=") {
-            return parse(value);
-        }
-        if arg == "--port" {
-            return match args.next() {
-                Some(value) => parse(&value),
-                None => Err("--port needs a value".into()),
-            };
-        }
+    let Some(arg) = args.next() else {
+        return env.map_or(Ok(DEFAULT_PORT), |value| parse(&value));
+    };
+    let port = if let Some(value) = arg.strip_prefix("--port=") {
+        parse(value)?
+    } else if arg == "--port" {
+        parse(&args.next().ok_or("--port needs a value")?)?
+    } else {
         return Err(format!("unknown argument: {arg}"));
-    }
-    match env {
-        Some(value) => parse(&value),
-        None => Ok(DEFAULT_PORT),
+    };
+    match args.next() {
+        Some(extra) => Err(format!("unknown argument: {extra}")),
+        None => Ok(port),
     }
 }
 
@@ -113,5 +111,6 @@ mod tests {
         assert!(port_from(args(&["--port", "70000"]), None).is_err());
         assert!(port_from(args(&[]), Some("abc".into())).is_err());
         assert!(port_from(args(&["--verbose"]), None).is_err());
+        assert!(port_from(args(&["--port", "1", "x"]), None).is_err());
     }
 }

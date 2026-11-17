@@ -105,8 +105,12 @@ fn largest_sample(data: &[u8], trak_start: usize, trak_end: usize) -> Option<(us
                 .get(i + 1)
                 .map(|(nf, _)| *nf)
                 .unwrap_or((total_chunks as u32) + 1);
-            for chunk in (first_chunk as usize - 1)..(next_first as usize - 1).min(total_chunks) {
-                samples_per_chunk[chunk] = spc as usize;
+            let (start, end) = (
+                first_chunk as usize - 1,
+                (next_first as usize - 1).min(total_chunks),
+            );
+            if let Some(slots) = samples_per_chunk.get_mut(start..end) {
+                slots.fill(spc as usize);
             }
         }
 
@@ -133,7 +137,7 @@ fn largest_sample(data: &[u8], trak_start: usize, trak_end: usize) -> Option<(us
         let offset = *chunk_offsets.get(chunk)? as usize + chunk_running;
         chunk_running += sz;
 
-        if best.as_ref().map_or(true, |(bs, _, _)| sz > *bs) {
+        if best.as_ref().is_none_or(|(bs, _, _)| sz > *bs) {
             best = Some((sz, offset, sz));
         }
     }
@@ -153,7 +157,7 @@ pub fn raw_data(data: &[u8]) -> Option<Vec<u8>> {
         if &typ == b"trak" {
             if let Some((offset, len)) = largest_sample(data, pos, pos + size) {
                 let bytes = data.get(offset..offset + len)?.to_vec();
-                if best.as_ref().map_or(true, |(bl, _)| len > *bl) {
+                if best.as_ref().is_none_or(|(bl, _)| len > *bl) {
                     best = Some((len, bytes));
                 }
             }
