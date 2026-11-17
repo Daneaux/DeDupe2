@@ -160,7 +160,10 @@ fn deep_scan_after_shallow_adds_reuses_and_stays_idempotent() {
     let first = deep_scan_pairs_cached(&pairs, &cache, &|_, _| {});
     let (_, computed_first) = stats_delta(&cache, before);
     assert_eq!(first.kept, 2, "{first:?}");
-    assert!(computed_first > 0, "deep data is computed on the first pass");
+    assert!(
+        computed_first > 0,
+        "deep data is computed on the first pass"
+    );
 
     let before = lock(&cache).stats();
     let second = deep_scan_pairs_cached(&pairs, &cache, &|_, _| {});
@@ -181,7 +184,9 @@ fn cached_dates_are_reused_across_exif_passes() {
 
     let cache = std::sync::Mutex::new(ScanCache::new());
     let first = creation_dates_cached(&cache, &paths, &|_, _| {});
-    assert!(first.iter().all(|d| *d != dedupe2::exif::CreationDate::Unknown));
+    assert!(first
+        .iter()
+        .all(|d| *d != dedupe2::exif::CreationDate::Unknown));
 
     let before = lock(&cache).stats();
     let second = creation_dates_cached(&cache, &paths, &|_, _| {});
@@ -211,7 +216,11 @@ fn lookups_after_parent_invalidation_rebuild_the_branch_lazily() {
     assert_eq!(cache.stats().files, 2);
 
     cache.invalidate_branch(&root.path().join("a/b/c"));
-    assert_eq!(cache.stats().files, 0, "whole subtree dropped with the parent");
+    assert_eq!(
+        cache.stats().files,
+        0,
+        "whole subtree dropped with the parent"
+    );
 
     // Rebuild: the deep file is recomputed (its data was dropped)...
     let before = cache.stats().computed;
@@ -287,7 +296,11 @@ fn missing_files_do_not_materialize_directory_nodes() {
     // Once the file exists, the lookup computes and stores it.
     let real_dir = root.path().join("no/such/tree");
     std::fs::create_dir_all(&real_dir).unwrap();
-    std::fs::write(real_dir.join("ghost.jpg"), sample("jpg-exif-mod/image1.JPG")).unwrap();
+    std::fs::write(
+        real_dir.join("ghost.jpg"),
+        sample("jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
     cache.shallow_hash(&ghost, 64 * 1024);
     assert_eq!(cache.stats().files, 1);
 }
@@ -399,7 +412,11 @@ fn branch_files_counts_only_the_requested_subtree() {
     assert_eq!(cache.branch_files(&root.path().join("one/deep")), 2);
     assert_eq!(cache.branch_files(&root.path().join("two")), 1);
     assert_eq!(cache.branch_files(&f1), 1, "single file");
-    assert_eq!(cache.branch_files(&root.path().join("nope")), 0, "unknown tree");
+    assert_eq!(
+        cache.branch_files(&root.path().join("nope")),
+        0,
+        "unknown tree"
+    );
     assert_eq!(cache.branch_files(&root.path().join("one/nope.jpg")), 0);
 
     // Invalidation shrinks the reported coverage.
@@ -420,7 +437,10 @@ fn branch_coverage_reports_each_layer() {
     let mut cache = ScanCache::new();
 
     // Nothing cached yet.
-    assert_eq!(cache.branch_coverage(root.path()), BranchCoverage::default());
+    assert_eq!(
+        cache.branch_coverage(root.path()),
+        BranchCoverage::default()
+    );
 
     // Shallow pass only.
     cache.shallow_hash(&a, 64 * 1024);
@@ -434,7 +454,10 @@ fn branch_coverage_reports_each_layer() {
     // Deep data on one file, phash on one, exif dates on both.
     cache.full_content_hash(&a).unwrap();
     cache.phash(&a);
-    cache.store_creation_date(&a, dedupe2::exif::CreationDate::DateCreated("2020-01-01".into()));
+    cache.store_creation_date(
+        &a,
+        dedupe2::exif::CreationDate::DateCreated("2020-01-01".into()),
+    );
     cache.store_creation_date(&b, dedupe2::exif::CreationDate::Unknown);
     let cov = cache.branch_coverage(root.path());
     assert_eq!(cov.shallow, 2);
@@ -445,7 +468,11 @@ fn branch_coverage_reports_each_layer() {
     // phash is reused like every other layer.
     let computed_before = cache.stats().computed;
     cache.phash(&a);
-    assert_eq!(cache.stats().computed, computed_before, "phash served from cache");
+    assert_eq!(
+        cache.stats().computed,
+        computed_before,
+        "phash served from cache"
+    );
     assert_eq!(cache.stats().reused, 1);
 }
 
@@ -477,11 +504,20 @@ fn cache_round_trips_through_the_persisted_snapshot() {
     assert_eq!(loaded.phash(&file).unwrap(), phash);
     assert_eq!(
         loaded.creation_date(&file),
-        Some(dedupe2::exif::CreationDate::DateCreated("2020-05-04 03:02:01".into()))
+        Some(dedupe2::exif::CreationDate::DateCreated(
+            "2020-05-04 03:02:01".into()
+        ))
     );
     let after = loaded.stats();
-    assert_eq!(after.computed, before.computed, "nothing recomputed after load");
-    assert_eq!(after.reused, before.reused + 4, "every layer served from the snapshot");
+    assert_eq!(
+        after.computed, before.computed,
+        "nothing recomputed after load"
+    );
+    assert_eq!(
+        after.reused,
+        before.reused + 4,
+        "every layer served from the snapshot"
+    );
 }
 
 #[test]
@@ -502,7 +538,11 @@ fn loaded_entries_still_validate_against_the_filesystem() {
     let before = loaded.stats();
     let (hash, _) = loaded.shallow_hash(&file, 64 * 1024);
     let after = loaded.stats();
-    assert_eq!(after.computed, before.computed + 1, "stale entry recomputed");
+    assert_eq!(
+        after.computed,
+        before.computed + 1,
+        "stale entry recomputed"
+    );
     assert_ne!(hash, 0);
 }
 
@@ -518,7 +558,11 @@ fn corrupt_cache_files_load_as_empty_and_usable() {
     let file = dir.path().join("photo.jpg");
     std::fs::write(&file, sample("jpg-exif-mod/image1.JPG")).unwrap();
     cache.shallow_hash(&file, 64 * 1024);
-    assert_eq!(cache.stats().files, 1, "cache still works after a corrupt load");
+    assert_eq!(
+        cache.stats().files,
+        1,
+        "cache still works after a corrupt load"
+    );
 }
 
 #[cfg(unix)]
@@ -546,7 +590,11 @@ fn non_utf8_paths_survive_persistence() {
     assert_eq!(loaded.stats().files, 1, "non-UTF8 path persisted");
     let before = loaded.stats();
     assert_eq!(loaded.shallow_hash(&file, 64 * 1024), expected);
-    assert_eq!(loaded.stats().reused, before.reused + 1, "served from the snapshot");
+    assert_eq!(
+        loaded.stats().reused,
+        before.reused + 1,
+        "served from the snapshot"
+    );
 }
 
 #[test]
@@ -610,12 +658,19 @@ fn real_volumes_have_uuids_and_unique_cache_branches() {
         );
         by_key.entry(key).or_default().push(mount.clone());
     }
-    println!("{} mount(s), {} distinct volume(s)", mounts.len(), by_key.len());
+    println!(
+        "{} mount(s), {} distinct volume(s)",
+        mounts.len(),
+        by_key.len()
+    );
 
     // Multiple mount points of the SAME volume share a key (and therefore a
     // single cache branch); distinct volumes must not collide.
     let distinct = by_key.len();
-    assert!(distinct >= 2, "expected at least two distinct volumes, got {distinct}");
+    assert!(
+        distinct >= 2,
+        "expected at least two distinct volumes, got {distinct}"
+    );
 
     // 2. Cache something on every distinct volume. Writable volumes get a
     // probe with the SAME relative path (so a branch collision would be
@@ -625,14 +680,18 @@ fn real_volumes_have_uuids_and_unique_cache_branches() {
         let mut stack = vec![root.to_path_buf()];
         let mut seen = 0usize;
         while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
             for entry in entries.flatten() {
                 seen += 1;
                 if seen > 20_000 {
                     return None;
                 }
                 let path = entry.path();
-                let Ok(kind) = entry.file_type() else { continue };
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
                 if kind.is_dir() {
                     stack.push(path);
                 } else if kind.is_file() && dedupe2::image_reader::is_supported_image(&path) {
@@ -643,7 +702,9 @@ fn real_volumes_have_uuids_and_unique_cache_branches() {
         None
     }
 
-    let boot_key = cache.volume_key(std::path::Path::new("/")).unwrap_or_default();
+    let boot_key = cache
+        .volume_key(std::path::Path::new("/"))
+        .unwrap_or_default();
 
     let mut probes: Vec<(String, PathBuf, u64)> = Vec::new(); // same rel path
     let mut others: Vec<(String, PathBuf, u64)> = Vec::new(); // any existing file
@@ -670,10 +731,16 @@ fn real_volumes_have_uuids_and_unique_cache_branches() {
                     println!("skipping {} ({e})", mount.display());
                     continue;
                 }
-                println!("{} is not writable ({e}) — using an existing file", mount.display());
+                println!(
+                    "{} is not writable ({e}) — using an existing file",
+                    mount.display()
+                );
                 if let Some(existing) = first_supported_file(mount) {
                     let (hash, decoded) = cache.shallow_hash(&existing, 64 * 1024);
-                    println!("  cached {} (hash {hash:016x}, decoded={decoded})", existing.display());
+                    println!(
+                        "  cached {} (hash {hash:016x}, decoded={decoded})",
+                        existing.display()
+                    );
                     others.push((key.clone(), existing, hash));
                 } else {
                     println!("  no supported file found on {}", mount.display());
@@ -687,9 +754,7 @@ fn real_volumes_have_uuids_and_unique_cache_branches() {
     // volume and an empty Recovery; the cross-volume checks below are what
     // matter when more than one cacheable volume is actually mounted.
     if cached_volumes < 2 {
-        println!(
-            "only {cached_volumes} cacheable volume(s) mounted — cross-volume checks skipped"
-        );
+        println!("only {cached_volumes} cacheable volume(s) mounted — cross-volume checks skipped");
         return;
     }
 

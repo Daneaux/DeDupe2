@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use dedupe2::image_reader::{hash_image_data_n, read_image, read_image_data, thumbnail_jpeg, ReadLimit};
+use dedupe2::image_reader::{
+    hash_image_data_n, read_image, read_image_data, thumbnail_jpeg, ReadLimit,
+};
 
 fn write(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
     let path = dir.join(name);
@@ -40,7 +42,10 @@ fn corrupt_containers_never_panic_and_never_produce_previews() {
         ("empty.jpg", Vec::new()),
         ("truncated.jpg", vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]),
         ("zero-dims.png", png_without_idat(0, 0)),
-        ("truncated.png", vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]),
+        (
+            "truncated.png",
+            vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0],
+        ),
         ("truncated.heic", b"\0\0\0\x18ftypheic\0\0\0\0heic".to_vec()),
         ("truncated.mov", b"\0\0\0\x08ftyp".to_vec()),
         ("garbage.crw", b"II\x1A\0\0\0HEAPCCDR".to_vec()),
@@ -79,8 +84,8 @@ fn missing_files_are_handled_without_panicking() {
 
 #[test]
 fn thumbnail_is_a_small_jpeg_of_a_real_photo() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/jpg-exif-mod/image1.JPG");
     let bytes = thumbnail_jpeg(&source).expect("fixture preview");
     assert_eq!(&bytes[..2], &[0xFF, 0xD8], "preview is a JPEG");
 
@@ -95,8 +100,8 @@ fn thumbnail_is_a_small_jpeg_of_a_real_photo() {
 
 #[test]
 fn truncated_real_photo_is_unreadable_not_fatal() {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/jpg-exif-mod/image1.JPG");
     let bytes = std::fs::read(&source).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = write(dir.path(), "cut.jpg", &bytes[..16]);

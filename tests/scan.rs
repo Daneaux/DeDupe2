@@ -141,12 +141,9 @@ fn scan_reports_progress_once_per_file_across_roots() {
     // An empty tree completes without inventing any progress.
     let empty = tempfile::tempdir().unwrap();
     let calls = Mutex::new(Vec::new());
-    let tree = scan_tree(
-        empty.path(),
-        64 * 1024,
-        None,
-        &|done, total| calls.lock().unwrap().push((done, total)),
-    )
+    let tree = scan_tree(empty.path(), 64 * 1024, None, &|done, total| {
+        calls.lock().unwrap().push((done, total))
+    })
     .unwrap();
     assert!(tree.files.is_empty());
     assert!(calls.into_inner().unwrap().is_empty());

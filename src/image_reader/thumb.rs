@@ -10,9 +10,8 @@ const MAX_EDGE: u32 = 256;
 /// Decode a file and re-encode it as a small JPEG. `None` when the file
 /// cannot be decoded (or the decoder panics).
 pub fn thumbnail_jpeg(path: &Path) -> Option<Vec<u8>> {
-    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        super::read_image(path)
-    }));
+    let decoded =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::read_image(path)));
     let image = match decoded {
         Ok(Ok(image)) => image,
         _ => return None,

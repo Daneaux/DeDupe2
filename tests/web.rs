@@ -43,7 +43,10 @@ async fn compare_form_renders() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let text = body_string(res.into_body()).await;
-    assert!(text.contains("compare-form"), "form body should include the compare form");
+    assert!(
+        text.contains("compare-form"),
+        "form body should include the compare form"
+    );
 }
 
 #[tokio::test]
@@ -61,7 +64,10 @@ async fn compare_run_streams_progress_then_done() {
         urlencode(&a.display().to_string()),
         urlencode(&b.display().to_string())
     );
-    let res = app().oneshot(form_request("/compare/run", body)).await.unwrap();
+    let res = app()
+        .oneshot(form_request("/compare/run", body))
+        .await
+        .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let content_type = res.headers().get("content-type").unwrap().to_str().unwrap();
     assert!(
@@ -70,8 +76,14 @@ async fn compare_run_streams_progress_then_done() {
     );
 
     let text = body_string(res.into_body()).await;
-    assert!(text.contains("event: done"), "stream must end with a done event: {text}");
-    assert!(text.contains("compare-deep-form"), "done event must carry rendered results");
+    assert!(
+        text.contains("event: done"),
+        "stream must end with a done event: {text}"
+    );
+    assert!(
+        text.contains("compare-deep-form"),
+        "done event must carry rendered results"
+    );
 }
 
 #[tokio::test]
@@ -108,7 +120,10 @@ async fn large_payloads_reach_the_handler_not_the_body_limit() {
     // a 413 from a misapplied default 2mb limit.
     let big = "x".repeat(5 * 1024 * 1024);
     let body = format!("a={big}&b={big}");
-    let res = app().oneshot(form_request("/compare/run", body)).await.unwrap();
+    let res = app()
+        .oneshot(form_request("/compare/run", body))
+        .await
+        .unwrap();
     assert_ne!(
         res.status(),
         StatusCode::PAYLOAD_TOO_LARGE,
@@ -128,7 +143,10 @@ async fn verify_streams_a_result_for_an_empty_but_existent_tree() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let text = body_string(res.into_body()).await;
-    assert!(text.contains("event: done"), "verify stream should complete: {text}");
+    assert!(
+        text.contains("event: done"),
+        "verify stream should complete: {text}"
+    );
 }
 
 fn urlencode(s: &str) -> String {
@@ -153,8 +171,7 @@ async fn deep_scan_web_flow_never_removes_byte_identical_pairs() {
 
     // Byte-identical copy in each tree (same image1.JPG bytes).
     let img = std::fs::read(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/TestImages/jpg-exif-mod/image1.JPG"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/jpg-exif-mod/image1.JPG"),
     )
     .unwrap();
     let a_path = a.join("photo.jpg");
@@ -168,7 +185,10 @@ async fn deep_scan_web_flow_never_removes_byte_identical_pairs() {
         urlencode(&a.display().to_string()),
         urlencode(&b.display().to_string())
     );
-    let res = app().oneshot(form_request("/compare/run", body)).await.unwrap();
+    let res = app()
+        .oneshot(form_request("/compare/run", body))
+        .await
+        .unwrap();
     let html = body_string(res.into_body()).await;
     assert!(html.contains("photo.jpg"), "compare should list the pair");
 
@@ -184,8 +204,7 @@ async fn deep_scan_web_flow_never_removes_byte_identical_pairs() {
         .unwrap();
     let html = body_string(res.into_body()).await;
     assert!(
-        html.contains("0 removed as false positives")
-            && html.contains("1 confirmed duplicates"),
+        html.contains("0 removed as false positives") && html.contains("1 confirmed duplicates"),
         "byte-identical pair must be confirmed in the deep scan result: {html}"
     );
     assert!(
@@ -226,10 +245,26 @@ async fn deep_scan_suppresses_cross_rows_and_originals_when_every_b_matches() {
 
     // Exactly what compare_result.html posts: the full A x B cross product.
     let pairs = [
-        format!("{}\t{}", a.join("a1.mp4").display(), b.join("b1.mp4").display()),
-        format!("{}\t{}", a.join("a1.mp4").display(), b.join("b2.mp4").display()),
-        format!("{}\t{}", a.join("a2.mp4").display(), b.join("b1.mp4").display()),
-        format!("{}\t{}", a.join("a2.mp4").display(), b.join("b2.mp4").display()),
+        format!(
+            "{}\t{}",
+            a.join("a1.mp4").display(),
+            b.join("b1.mp4").display()
+        ),
+        format!(
+            "{}\t{}",
+            a.join("a1.mp4").display(),
+            b.join("b2.mp4").display()
+        ),
+        format!(
+            "{}\t{}",
+            a.join("a2.mp4").display(),
+            b.join("b1.mp4").display()
+        ),
+        format!(
+            "{}\t{}",
+            a.join("a2.mp4").display(),
+            b.join("b2.mp4").display()
+        ),
     ]
     .join("\n");
 
@@ -254,7 +289,10 @@ async fn deep_scan_suppresses_cross_rows_and_originals_when_every_b_matches() {
         "cross rows must not surface: {html}"
     );
     // originals list is empty, so the EXIF scan button must be disabled.
-    assert!(html.contains("Scan for EXIF") && html.contains("disabled"), "originals must stay empty: {html}");
+    assert!(
+        html.contains("Scan for EXIF") && html.contains("disabled"),
+        "originals must stay empty: {html}"
+    );
 }
 
 #[tokio::test]
@@ -291,8 +329,14 @@ async fn purgatory_moves_duplicate_files_into_side_tree() {
 
     assert!(html.contains("Moved to Purgatory"), "{html}");
     assert!(html.contains("2"), "moved count missing: {html}");
-    assert_eq!(std::fs::read(purg.join("2013/07-30/IMG_1.jpg")).unwrap(), b"dup-one");
-    assert_eq!(std::fs::read(purg.join("2013/07-31/IMG_2.jpg")).unwrap(), b"dup-two");
+    assert_eq!(
+        std::fs::read(purg.join("2013/07-30/IMG_1.jpg")).unwrap(),
+        b"dup-one"
+    );
+    assert_eq!(
+        std::fs::read(purg.join("2013/07-31/IMG_2.jpg")).unwrap(),
+        b"dup-two"
+    );
     assert!(!src.join("2013/07-30").exists(), "empty dirs pruned");
     assert!(!src.join("2013/07-31").exists());
     assert!(keep.exists());
@@ -418,7 +462,10 @@ async fn copy_uses_carried_dates_and_reextracts_only_missing_ones() {
         urlencode("YYYY/MM-DD <folder description>"),
         urlencode(&dates)
     );
-    let res = app().oneshot(form_request("/compare/copy", body)).await.unwrap();
+    let res = app()
+        .oneshot(form_request("/compare/copy", body))
+        .await
+        .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let html = body_string(res.into_body()).await;
     assert!(html.contains("event: done"), "{html}");
@@ -439,12 +486,16 @@ async fn copy_uses_carried_dates_and_reextracts_only_missing_ones() {
 
     // a.jpg: carried date wins (2010-05-30), proving no re-extraction.
     assert!(
-        landed.iter().any(|p| p.contains("2010/05-30") && p.ends_with("a.jpg")),
+        landed
+            .iter()
+            .any(|p| p.contains("2010/05-30") && p.ends_with("a.jpg")),
         "carried date must be used: {landed:?}"
     );
     // b.jpg: no carried date, so its real EXIF date is extracted.
     assert!(
-        landed.iter().any(|p| p.contains("2022/08-17") && p.ends_with("b.jpg")),
+        landed
+            .iter()
+            .any(|p| p.contains("2022/08-17") && p.ends_with("b.jpg")),
         "missing carried date must fall back to extraction: {landed:?}"
     );
 }
@@ -476,7 +527,10 @@ async fn unknown_carried_dates_skip_extraction_entirely() {
         urlencode("YYYY/MM-DD <folder description>"),
         urlencode(&dates)
     );
-    let res = app().oneshot(form_request("/compare/copy", body)).await.unwrap();
+    let res = app()
+        .oneshot(form_request("/compare/copy", body))
+        .await
+        .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let html = body_string(res.into_body()).await;
     assert!(html.contains("event: done"), "{html}");
@@ -484,7 +538,10 @@ async fn unknown_carried_dates_skip_extraction_entirely() {
     // Nothing copied, and the raw was not re-extracted (no destination folder
     // exists at all).
     let landed: Vec<_> = std::fs::read_dir(&library).unwrap().collect();
-    assert!(landed.is_empty(), "unknown-marked file must not be placed: {landed:?}");
+    assert!(
+        landed.is_empty(),
+        "unknown-marked file must not be placed: {landed:?}"
+    );
 }
 
 #[tokio::test]
@@ -571,7 +628,10 @@ async fn organize_run_rejects_duplicates_already_in_destination() {
 
     assert!(html.contains("Organize Complete"), "{html}");
     assert!(html.contains("Rejected duplicates"), "{html}");
-    assert!(html.contains("already-here.jpg"), "matched existing file: {html}");
+    assert!(
+        html.contains("already-here.jpg"),
+        "matched existing file: {html}"
+    );
     assert!(dup.exists(), "rejected source stays in the source tree");
     assert!(!fresh.exists(), "fresh file moved");
     assert!(dest.join("2005/01-10/fresh.jpg").exists());
@@ -644,7 +704,10 @@ async fn repeated_compare_indicates_cache_reuse() {
         .await
         .unwrap();
     let first = body_string(res.into_body()).await;
-    assert!(!first.contains("reused / 0 computed"), "first run computes: {first}");
+    assert!(
+        !first.contains("reused / 0 computed"),
+        "first run computes: {first}"
+    );
 
     let res = app_with_state(state)
         .oneshot(form_request("/compare/run", body))
@@ -808,7 +871,10 @@ async fn cache_status_reports_each_layer_after_scans() {
         let res = app_with_state(state)
             .oneshot(
                 Request::builder()
-                    .uri(format!("/cache-status?path={}", urlencode(&path.display().to_string())))
+                    .uri(format!(
+                        "/cache-status?path={}",
+                        urlencode(&path.display().to_string())
+                    ))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -895,7 +961,9 @@ async fn similar_tab_finds_scaled_copies_and_offers_purgatory() {
         image::imageops::FilterType::Lanczos3,
     );
     let candidate = tree.join("small.jpg");
-    small.save_with_format(&candidate, image::ImageFormat::Jpeg).unwrap();
+    small
+        .save_with_format(&candidate, image::ImageFormat::Jpeg)
+        .unwrap();
 
     let res = app()
         .oneshot(form_request(
@@ -918,7 +986,11 @@ async fn similar_tab_finds_scaled_copies_and_offers_purgatory() {
     let marker = "name=\"files\" value=\"";
     let start = html.find(marker).expect("files input") + marker.len();
     let end = start + html[start..].find('"').unwrap();
-    assert!(html[start..end].contains("small.jpg"), "{}", &html[start..end]);
+    assert!(
+        html[start..end].contains("small.jpg"),
+        "{}",
+        &html[start..end]
+    );
 }
 
 #[tokio::test]
@@ -942,7 +1014,9 @@ async fn similar_tab_compare_mode_matches_between_two_trees() {
         image::imageops::FilterType::Lanczos3,
     );
     let candidate = b.join("small.jpg");
-    small.save_with_format(&candidate, image::ImageFormat::Jpeg).unwrap();
+    small
+        .save_with_format(&candidate, image::ImageFormat::Jpeg)
+        .unwrap();
 
     let res = app()
         .oneshot(form_request(
@@ -1050,10 +1124,7 @@ async fn settings_tab_shows_and_moves_the_cache() {
     let html = body_string(res.into_body()).await;
     assert!(html.contains("Cache cleared"), "{html}");
     assert!(!new_cache.exists(), "cache file deleted");
-    assert_eq!(
-        dedupe2::Scanner::cache::lock(&state.cache).stats().files,
-        0
-    );
+    assert_eq!(dedupe2::Scanner::cache::lock(&state.cache).stats().files, 0);
 }
 
 #[tokio::test]
@@ -1128,7 +1199,9 @@ async fn similar_swap_replaces_worse_a_copies_with_better_b_copies() {
         image::imageops::FilterType::Lanczos3,
     );
     let a_worse = a_root.join("photo.jpg");
-    small.save_with_format(&a_worse, image::ImageFormat::Jpeg).unwrap();
+    small
+        .save_with_format(&a_worse, image::ImageFormat::Jpeg)
+        .unwrap();
     let b_better = b_root.join("photo.jpg");
     std::fs::copy(&original, &b_better).unwrap();
 
@@ -1263,7 +1336,10 @@ async fn compare_tables_have_their_own_filters_and_more_buttons() {
             "missing count for {suffix}"
         );
     }
-    assert!(!html.contains("id=\"compare-filter\""), "old global filter should be gone");
+    assert!(
+        !html.contains("id=\"compare-filter\""),
+        "old global filter should be gone"
+    );
     // ...and each table has a copy/move action tied to its filter.
     for suffix in ["a", "dups", "b", "unreadable"] {
         assert!(
@@ -1337,7 +1413,10 @@ async fn compare_table_transfer_copies_or_moves_filtered_files() {
     let res = app()
         .oneshot(form_request(
             "/compare/transfer",
-            format!("files={}&destination=&op=copy", urlencode(&two.display().to_string())),
+            format!(
+                "files={}&destination=&op=copy",
+                urlencode(&two.display().to_string())
+            ),
         ))
         .await
         .unwrap();
@@ -1369,8 +1448,11 @@ async fn similar_tables_have_filters_and_embedded_rows() {
     let html = body_string(res.into_body()).await;
     assert!(html.contains("id=\"similar-rows-data\""), "{html}");
     assert!(html.contains("id=\"similar-filter-rows\""), "{html}");
-        assert!(html.contains("id=\"similar-count-rows\""), "{html}");
-    assert!(html.contains("original.jpg") && html.contains("small.jpg"), "{html}");
+    assert!(html.contains("id=\"similar-count-rows\""), "{html}");
+    assert!(
+        html.contains("original.jpg") && html.contains("small.jpg"),
+        "{html}"
+    );
 
     // Compare mode: an exact copy (duplicate) plus a downscale (similar).
     let b_root = root.path().join("candidate");
@@ -1396,7 +1478,7 @@ async fn similar_tables_have_filters_and_embedded_rows() {
     let html = body_string(res.into_body()).await;
     assert!(html.contains("id=\"similar-matches-data\""), "{html}");
     assert!(html.contains("id=\"similar-filter-matches\""), "{html}");
-        assert!(html.contains("id=\"similar-count-matches\""), "{html}");
+    assert!(html.contains("id=\"similar-count-matches\""), "{html}");
 }
 
 #[tokio::test]
@@ -1435,12 +1517,18 @@ async fn similar_compare_eliminates_exact_duplicates_first() {
     assert!(html.contains("Exact duplicates"), "{html}");
     assert!(html.contains("id=\"similar-dups-data\""), "{html}");
     assert!(html.contains("id=\"purgatory-form-dups\""), "{html}");
-    assert!(html.contains("Move 1 exact B copies to purgatory"), "{html}");
+    assert!(
+        html.contains("Move 1 exact B copies to purgatory"),
+        "{html}"
+    );
     let marker = "id=\"similar-dups-data\" type=\"application/json\">";
     let start = html.find(marker).unwrap() + marker.len();
     let end = start + html[start..].find("</script>").unwrap();
     let payload = &html[start..end];
-    assert!(payload.contains("exact.jpg"), "duplicate payload: {payload}");
+    assert!(
+        payload.contains("exact.jpg"),
+        "duplicate payload: {payload}"
+    );
     assert!(
         !payload.contains("small.jpg"),
         "the downscale is not an exact duplicate: {payload}"
@@ -1573,17 +1661,17 @@ async fn thumb_endpoint_serves_small_jpegs() {
     let res = app()
         .oneshot(
             Request::builder()
-                .uri(format!("/thumb?path={}", urlencode(&fixture.display().to_string())))
+                .uri(format!(
+                    "/thumb?path={}",
+                    urlencode(&fixture.display().to_string())
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(
-        res.headers().get("content-type").unwrap(),
-        "image/jpeg"
-    );
+    assert_eq!(res.headers().get("content-type").unwrap(), "image/jpeg");
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     assert!(bytes.len() > 100, "thumbnail has content");
     assert_eq!(&bytes[..2], &[0xFF, 0xD8], "JPEG magic");
@@ -1653,7 +1741,11 @@ async fn similar_decide_applies_keep_both_with_exif_destination() {
             "/similar/decide",
             format!(
                 "decisions={}&a_root={}&b_root={}&purgatory={}&format={}",
-                urlencode(&format!("{}\t{}\tkeep_both", a_bigger.display(), b_smaller.display())),
+                urlencode(&format!(
+                    "{}\t{}\tkeep_both",
+                    a_bigger.display(),
+                    b_smaller.display()
+                )),
                 urlencode(&a_root.display().to_string()),
                 urlencode(&b_root.display().to_string()),
                 urlencode(&purgatory.display().to_string()),
@@ -1701,7 +1793,10 @@ async fn similar_compare_page_offers_per_row_decisions() {
     let small = image::imageops::resize(&rgb, 600, 800, image::imageops::FilterType::Lanczos3);
     let mut scaled = Vec::new();
     small
-        .write_to(&mut std::io::Cursor::new(&mut scaled), image::ImageFormat::Jpeg)
+        .write_to(
+            &mut std::io::Cursor::new(&mut scaled),
+            image::ImageFormat::Jpeg,
+        )
         .unwrap();
     let mut b_bytes = vec![0xFF, 0xD8];
     b_bytes.extend_from_slice(app1);
@@ -1743,7 +1838,10 @@ fn resizable_table_machinery_is_wired() {
     )
     .unwrap();
     assert!(js.contains("Tabulator"), "table library wired");
-    assert!(js.contains("resizableColumns: true"), "column resizing delegated");
+    assert!(
+        js.contains("resizableColumns: true"),
+        "column resizing delegated"
+    );
     assert!(js.contains("rowSelection"), "select-all header checkbox");
     assert!(js.contains("paginationSize"), "pagination");
     assert!(js.contains("persistenceID"), "column widths persisted");
@@ -1751,9 +1849,19 @@ fn resizable_table_machinery_is_wired() {
     assert!(js.contains("fullscreen-toggle"), "fullscreen button wired");
     assert!(js.contains("fullscreen-exit"), "in-frame exit button");
     assert!(js.contains("Escape"), "escape exits fullscreen");
-    assert!(js.contains("similar-similarity-rows"), "similarity slider wired (self)");
-    assert!(js.contains("similar-similarity-matches"), "similarity slider wired (compare)");
-    for id in ["similar-table-matches", "similar-table-rows", "compare-table-dups"] {
+    assert!(
+        js.contains("similar-similarity-rows"),
+        "similarity slider wired (self)"
+    );
+    assert!(
+        js.contains("similar-similarity-matches"),
+        "similarity slider wired (compare)"
+    );
+    for id in [
+        "similar-table-matches",
+        "similar-table-rows",
+        "compare-table-dups",
+    ] {
         assert!(js.contains(id), "default widths for {id}");
     }
 
@@ -1763,9 +1871,15 @@ fn resizable_table_machinery_is_wired() {
     .unwrap();
     assert!(css.contains(".tabulator"), "table theme overrides");
     assert!(css.contains(".corner-resizer"), "corner handle styling");
-    assert!(css.contains(".table-frame.fullscreen"), "fullscreen styling");
+    assert!(
+        css.contains(".table-frame.fullscreen"),
+        "fullscreen styling"
+    );
     assert!(css.contains(".similarity-slider"), "slider styling");
-    assert!(css.contains("text-overflow: ellipsis"), "long paths stay on one line");
+    assert!(
+        css.contains("text-overflow: ellipsis"),
+        "long paths stay on one line"
+    );
 
     // The library assets are vendored locally (served from /static/vendor).
     let base = std::fs::read_to_string(
@@ -1774,11 +1888,9 @@ fn resizable_table_machinery_is_wired() {
     .unwrap();
     assert!(base.contains("/static/vendor/tabulator.min.js"), "{base}");
     assert!(base.contains("/static/vendor/tabulator.min.css"), "{base}");
-    assert!(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("static/vendor/tabulator.min.js")
-            .exists()
-    );
+    assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("static/vendor/tabulator.min.js")
+        .exists());
 }
 
 #[tokio::test]
@@ -1789,7 +1901,10 @@ async fn thumb_serves_the_fixture_and_rejects_non_images() {
     let res = app()
         .oneshot(
             Request::builder()
-                .uri(format!("/thumb?path={}", urlencode(&fixture.display().to_string())))
+                .uri(format!(
+                    "/thumb?path={}",
+                    urlencode(&fixture.display().to_string())
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1800,7 +1915,11 @@ async fn thumb_serves_the_fixture_and_rejects_non_images() {
     let body = res.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(&body[..2], &[0xFF, 0xD8], "preview body is a JPEG");
 
-    for bad in ["/definitely/not/here.jpg", "/etc/passwd", "../../../etc/hosts"] {
+    for bad in [
+        "/definitely/not/here.jpg",
+        "/etc/passwd",
+        "../../../etc/hosts",
+    ] {
         let res = app()
             .oneshot(
                 Request::builder()
@@ -1844,7 +1963,10 @@ async fn malformed_forms_never_return_a_server_error() {
 
     // Missing required fields are rejected by the extractor, not by a panic.
     for uri in ["/similar/run", "/organize/run", "/verify/rehome"] {
-        let res = app().oneshot(form_request(uri, String::new())).await.unwrap();
+        let res = app()
+            .oneshot(form_request(uri, String::new()))
+            .await
+            .unwrap();
         assert_ne!(res.status(), StatusCode::INTERNAL_SERVER_ERROR, "{uri}");
     }
 }
@@ -1864,7 +1986,10 @@ async fn cache_status_for_an_unknown_tree_reports_zeroes() {
     let body = body_string(res.into_body()).await;
     let value: serde_json::Value = serde_json::from_str(&body).unwrap();
     for key in ["cached_files", "shallow", "deep", "phash", "exif"] {
-        assert_eq!(value[key], 0, "{key} must be zero for an unknown tree: {body}");
+        assert_eq!(
+            value[key], 0,
+            "{key} must be zero for an unknown tree: {body}"
+        );
     }
 }
 
@@ -1886,7 +2011,10 @@ async fn verify_rehome_moves_a_misfiled_photo_and_reverifies() {
         urlencode(&root_path.display().to_string()),
         urlencode("YYYY/MM-DD")
     );
-    let res = app().oneshot(form_request("/verify/rehome", body)).await.unwrap();
+    let res = app()
+        .oneshot(form_request("/verify/rehome", body))
+        .await
+        .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let html = body_string(res.into_body()).await;
     assert!(html.contains("Re-home Complete"), "{html}");
@@ -1902,16 +2030,39 @@ async fn verify_rehome_moves_a_misfiled_photo_and_reverifies() {
 #[tokio::test]
 async fn every_route_is_mounted() {
     let gets = [
-        "/", "/consolidate", "/compare", "/sets", "/verify", "/settings", "/similar",
-        "/organize", "/reveal", "/thumb", "/cache-status",
+        "/",
+        "/consolidate",
+        "/compare",
+        "/sets",
+        "/verify",
+        "/settings",
+        "/similar",
+        "/organize",
+        "/reveal",
+        "/thumb",
+        "/cache-status",
     ];
     let posts = [
-        "/consolidate/preview", "/consolidate/run", "/compare/run", "/compare/exif",
-        "/compare/deep", "/compare/copy", "/compare/transfer", "/compare/purgatory",
+        "/consolidate/preview",
+        "/consolidate/run",
+        "/compare/run",
+        "/compare/exif",
+        "/compare/deep",
+        "/compare/copy",
+        "/compare/transfer",
+        "/compare/purgatory",
         "/compare/purgatory-duplicates",
-        "/sets/run", "/verify/run", "/verify/rehome", "/settings/save", "/settings/flush",
-        "/settings/clear", "/similar/run", "/similar/swap", "/similar/decide",
-        "/organize/scan", "/organize/run",
+        "/sets/run",
+        "/verify/run",
+        "/verify/rehome",
+        "/settings/save",
+        "/settings/flush",
+        "/settings/clear",
+        "/similar/run",
+        "/similar/swap",
+        "/similar/decide",
+        "/organize/scan",
+        "/organize/run",
     ];
 
     for uri in gets {
@@ -1919,12 +2070,23 @@ async fn every_route_is_mounted() {
             .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_ne!(res.status(), StatusCode::NOT_FOUND, "GET {uri} is not routed");
+        assert_ne!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "GET {uri} is not routed"
+        );
         assert_ne!(res.status(), StatusCode::METHOD_NOT_ALLOWED, "GET {uri}");
     }
     for uri in posts {
-        let res = app().oneshot(form_request(uri, String::new())).await.unwrap();
-        assert_ne!(res.status(), StatusCode::NOT_FOUND, "POST {uri} is not routed");
+        let res = app()
+            .oneshot(form_request(uri, String::new()))
+            .await
+            .unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "POST {uri} is not routed"
+        );
         assert_ne!(res.status(), StatusCode::METHOD_NOT_ALLOWED, "POST {uri}");
     }
 }
@@ -1945,7 +2107,10 @@ async fn requests_from_other_sites_are_forbidden() {
     };
 
     for headers in [
-        &[("host", "127.0.0.1:3000"), ("origin", "http://evil.example")][..],
+        &[
+            ("host", "127.0.0.1:3000"),
+            ("origin", "http://evil.example"),
+        ][..],
         &[("host", "127.0.0.1:3000"), ("sec-fetch-site", "cross-site")][..],
         &[("host", "evil.example:3000")][..],
     ] {

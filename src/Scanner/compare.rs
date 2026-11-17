@@ -1,13 +1,13 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 
-use crate::Scanner::scan::{scan_trees, TreeSnapshot};
 use crate::exif::{creation_dates_batch, CreationDate};
 use crate::image_reader::collect_image_files;
+use crate::Scanner::scan::{scan_trees, TreeSnapshot};
 
 #[derive(Debug)]
 pub struct Comparison {
@@ -66,7 +66,12 @@ fn compare_folders_inner(
     cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
     progress: &(dyn Fn(usize, usize) + Send + Sync),
 ) -> Result<Comparison, Box<dyn std::error::Error>> {
-    let trees = scan_trees(&[a.to_path_buf(), b.to_path_buf()], 64 * 1024, cache, progress)?;
+    let trees = scan_trees(
+        &[a.to_path_buf(), b.to_path_buf()],
+        64 * 1024,
+        cache,
+        progress,
+    )?;
     Ok(compare_snapshots(&trees[0], &trees[1]))
 }
 
@@ -604,10 +609,7 @@ fn is_true_duplicate(a: &Path, b: &Path) -> Option<String> {
     verdict(content_match(a, b))
 }
 
-fn images_equal(
-    a: &crate::image_reader::ImageData,
-    b: &crate::image_reader::ImageData,
-) -> bool {
+fn images_equal(a: &crate::image_reader::ImageData, b: &crate::image_reader::ImageData) -> bool {
     use crate::image_reader::PixelData;
 
     if a.width != b.width || a.height != b.height || a.cpp != b.cpp {
@@ -768,7 +770,8 @@ fn verify_tree_dates_inner(
         files: Vec::with_capacity(files.len()),
     };
 
-    let as_date = |(y, m, d): (u32, u32, u32)| chrono::NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32);
+    let as_date =
+        |(y, m, d): (u32, u32, u32)| chrono::NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32);
     let days_between = |a: (u32, u32, u32), b: (u32, u32, u32)| -> i64 {
         match (as_date(a), as_date(b)) {
             (Some(da), Some(db)) => da.signed_duration_since(db).num_days().abs(),

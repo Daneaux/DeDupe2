@@ -5,7 +5,9 @@ use dedupe2::filemover::{merge_libraries, preview_merge, MergeOutcome, Operation
 
 /// Read a real sample image from the checked-in TestImages set.
 fn sample(rel: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages").join(rel);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages")
+        .join(rel);
     fs::read(path).expect("sample image should exist")
 }
 
@@ -127,7 +129,11 @@ fn dedupe_with_64kb_encoded_image_data_and_merge() {
 
     // Move consolidates: nothing is left behind in the sources.
     for lib in [&lib_a, &lib_b] {
-        assert!(tree_rel(lib).is_empty(), "source {:?} should be emptied", lib);
+        assert!(
+            tree_rel(lib).is_empty(),
+            "source {:?} should be emptied",
+            lib
+        );
     }
 }
 
@@ -185,10 +191,7 @@ fn preview_merge_reports_groups_without_moving_files() {
     assert_eq!(plan.duplicate_groups.len(), 1);
     assert_eq!(plan.duplicate_groups[0].purged.len(), 2);
     assert_eq!(plan.uniques.len(), 1);
-    assert!(destination
-        .display()
-        .to_string()
-        .ends_with("library"));
+    assert!(destination.display().to_string().ends_with("library"));
     assert_eq!(plan.purgatory, root.path().join("purgatory"));
 
     // Preview must not touch disk.

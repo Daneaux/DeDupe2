@@ -4,7 +4,9 @@ use std::path::Path;
 use dedupe2::filemover::consolidate_events;
 
 fn sample(rel: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages").join(rel);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages")
+        .join(rel);
     fs::read(path).expect("sample image should exist")
 }
 

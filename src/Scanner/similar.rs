@@ -191,7 +191,8 @@ pub fn find_similar_with_progress(
         }
     }
 
-    let mut members: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+    let mut members: std::collections::HashMap<usize, Vec<usize>> =
+        std::collections::HashMap::new();
     for i in 0..n {
         let root = find(&mut parent, i);
         members.entry(root).or_default().push(i);
@@ -463,7 +464,8 @@ pub fn find_similar_between_with_progress(
             let replace = match best {
                 None => true,
                 Some((current, current_distance)) => {
-                    (distance, std::cmp::Reverse(a.phash.pixels())) < (current_distance, std::cmp::Reverse(current.phash.pixels()))
+                    (distance, std::cmp::Reverse(a.phash.pixels()))
+                        < (current_distance, std::cmp::Reverse(current.phash.pixels()))
                 }
             };
             if replace {

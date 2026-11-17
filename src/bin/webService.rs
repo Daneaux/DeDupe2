@@ -60,10 +60,7 @@ async fn main() {
 }
 
 /// `--port N` (or `--port=N`) beats `$DEDUPE2_PORT`, which beats the default.
-fn port_from(
-    mut args: impl Iterator<Item = String>,
-    env: Option<String>,
-) -> Result<u16, String> {
+fn port_from(mut args: impl Iterator<Item = String>, env: Option<String>) -> Result<u16, String> {
     let parse = |value: &str| {
         value
             .trim()
@@ -93,14 +90,20 @@ mod tests {
     use super::*;
 
     fn args(list: &[&str]) -> impl Iterator<Item = String> {
-        list.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter()
+        list.iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 
     #[test]
     fn port_resolution_order() {
         assert_eq!(port_from(args(&[]), None), Ok(DEFAULT_PORT));
         assert_eq!(port_from(args(&[]), Some("8080".into())), Ok(8080));
-        assert_eq!(port_from(args(&["--port", "9000"]), Some("8080".into())), Ok(9000));
+        assert_eq!(
+            port_from(args(&["--port", "9000"]), Some("8080".into())),
+            Ok(9000)
+        );
         assert_eq!(port_from(args(&["--port=9001"]), None), Ok(9001));
     }
 

@@ -51,9 +51,19 @@ fn similar_groups_keep_the_largest_copy_and_flag_smaller_ones() {
         .iter()
         .map(|c| c.path.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(candidate_names, vec!["half.jpg", "third.jpg"], "{outcome:?}");
-    assert!(group.candidates.iter().all(|c| c.distance <= dedupe2::image_reader::SIMILAR_MAX_DISTANCE));
-    assert!(group.candidates.iter().all(|c| c.pixels < group.keeper_pixels));
+    assert_eq!(
+        candidate_names,
+        vec!["half.jpg", "third.jpg"],
+        "{outcome:?}"
+    );
+    assert!(group
+        .candidates
+        .iter()
+        .all(|c| c.distance <= dedupe2::image_reader::SIMILAR_MAX_DISTANCE));
+    assert!(group
+        .candidates
+        .iter()
+        .all(|c| c.pixels < group.keeper_pixels));
 }
 
 #[test]
@@ -106,7 +116,14 @@ fn upscaled_copies_are_still_discovered_as_one_group() {
         .iter()
         .map(|c| c.path.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    members.push(group.keeper.file_name().unwrap().to_string_lossy().into_owned());
+    members.push(
+        group
+            .keeper
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+    );
     members.sort();
     assert_eq!(
         members,
@@ -146,7 +163,10 @@ fn size_first_keeper_beats_a_more_pixels_upscale() {
 
     assert_eq!(outcome.groups.len(), 1, "{outcome:?}");
     let group = &outcome.groups[0];
-    assert_eq!(group.keeper, source, "the larger file on disk is the keeper");
+    assert_eq!(
+        group.keeper, source,
+        "the larger file on disk is the keeper"
+    );
     assert!(group.keeper_bytes > group.candidates[0].bytes);
     let up_candidate = group
         .candidates
@@ -241,7 +261,11 @@ fn cross_tree_compare_flags_only_worse_b_copies() {
     // A synthetic photo unrelated to either A fixture.
     let mut distinct = image::RgbImage::new(320, 240);
     for (x, y, pixel) in distinct.enumerate_pixels_mut() {
-        *pixel = image::Rgb([(x * 3 % 256) as u8, (y * 7 % 256) as u8, ((x + y) % 256) as u8]);
+        *pixel = image::Rgb([
+            (x * 3 % 256) as u8,
+            (y * 7 % 256) as u8,
+            ((x + y) % 256) as u8,
+        ]);
     }
     distinct
         .save_with_format(&unrelated_b, image::ImageFormat::Jpeg)
@@ -411,7 +435,10 @@ fn swap_failure_leaves_everything_recoverable() {
     // Phase 1 succeeded: A's worse copy is safe in purgatory, nothing lost.
     assert!(!a_worse.exists());
     assert!(purgatory.join("downscaled.jpg").exists());
-    assert!(outcome.failures[0].1.contains("safe in purgatory"), "{outcome:?}");
+    assert!(
+        outcome.failures[0].1.contains("safe in purgatory"),
+        "{outcome:?}"
+    );
 }
 
 #[test]
@@ -496,9 +523,7 @@ fn cross_tree_compare_ignores_black_and_white_counterparts() {
 fn known_false_pair_is_not_similar() {
     use dedupe2::Scanner::similar::find_similar_between_with_progress;
 
-    let a_file = std::path::Path::new(
-        "/Users/dannydalal/4tbext/AllPhotos/2017/05-12/IMG_0173.JPG",
-    );
+    let a_file = std::path::Path::new("/Users/dannydalal/4tbext/AllPhotos/2017/05-12/IMG_0173.JPG");
     let b_file = std::path::Path::new(
         "/Users/dannydalal/4tbext/SrcImageFolders/iCloud/downloaded/Actual 2017/IMG_2536.JPG",
     );
@@ -560,7 +585,11 @@ fn similar_decisions_keep_both_purge_both_and_take_bigger() {
 
     let decisions = vec![
         (a_keep.clone(), b_keep.clone(), SimilarDecision::KeepBoth),
-        (a_purge.clone(), b_purge.clone(), SimilarDecision::PurgatoryBoth),
+        (
+            a_purge.clone(),
+            b_purge.clone(),
+            SimilarDecision::PurgatoryBoth,
+        ),
         (a_small.clone(), b_big.clone(), SimilarDecision::TakeBigger),
         (a_big.clone(), b_small.clone(), SimilarDecision::TakeBigger),
     ];
@@ -583,12 +612,17 @@ fn similar_decisions_keep_both_purge_both_and_take_bigger() {
     assert!(!b_keep.exists());
     let moved = a_root.join("2022/08-17/kept.jpg");
     assert!(moved.exists(), "B renamed-in at its EXIF destination");
-    assert_eq!(std::fs::read(&moved).unwrap(), std::fs::read(&original).unwrap());
+    assert_eq!(
+        std::fs::read(&moved).unwrap(),
+        std::fs::read(&original).unwrap()
+    );
 
     // 2. both copies in purgatory, nothing left in either tree.
     assert!(!a_purge.exists() && !b_purge.exists());
     assert!(purgatory.join("purge.jpg").exists());
-    assert!(purgatory.join("candidate-purge.jpg").exists() || purgatory.join("purge (1).jpg").exists());
+    assert!(
+        purgatory.join("candidate-purge.jpg").exists() || purgatory.join("purge (1).jpg").exists()
+    );
 
     // 3a. swap: A path now holds the bigger B content; the small A copy is safe.
     assert_eq!(std::fs::read(&a_small).unwrap(), vec![7u8; 4096]);
@@ -631,10 +665,19 @@ fn similarity_groups_keep_the_largest_copy_and_distances_are_symmetric() {
 
     let mut seen = HashSet::new();
     for candidate in &group.candidates {
-        assert!(seen.insert(candidate.path.clone()), "candidate listed twice");
+        assert!(
+            seen.insert(candidate.path.clone()),
+            "candidate listed twice"
+        );
         let meta = std::fs::metadata(&candidate.path).unwrap();
-        assert!(meta.len() <= keeper_meta.len(), "candidates are not bigger than the keeper");
-        assert!(candidate.pixels < group.keeper_pixels, "candidate has fewer pixels");
+        assert!(
+            meta.len() <= keeper_meta.len(),
+            "candidates are not bigger than the keeper"
+        );
+        assert!(
+            candidate.pixels < group.keeper_pixels,
+            "candidate has fewer pixels"
+        );
 
         let candidate_phash = phash(&candidate.path).expect("candidate phash");
         assert_eq!(

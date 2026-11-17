@@ -1,9 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use dedupe2::exif::{creation_date, creation_dates_batch, pick_exiftool_date, resolve, CreationDate};
+use dedupe2::exif::{
+    creation_date, creation_dates_batch, pick_exiftool_date, resolve, CreationDate,
+};
 
 fn test_image(rel: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages").join(rel)
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages")
+        .join(rel)
 }
 
 #[test]
@@ -336,7 +340,9 @@ fn batch_resolves_xmp_files_and_folder_proxies_the_rest() {
     let xmp_path = root.path().join("blend.tif");
     std::fs::write(
         &xmp_path,
-        xmp_tiff(&xmp_packet(r#"photoshop:DateCreated="2012-01-02T03:04:05.06""#)),
+        xmp_tiff(&xmp_packet(
+            r#"photoshop:DateCreated="2012-01-02T03:04:05.06""#,
+        )),
     )
     .unwrap();
 
@@ -344,7 +350,10 @@ fn batch_resolves_xmp_files_and_folder_proxies_the_rest() {
     std::fs::write(&undated_path, b"no dates here").unwrap();
 
     let dates = creation_dates_batch(&[xmp_path.clone(), undated_path.clone()], &|_, _| {});
-    assert_eq!(dates[0], CreationDate::DateCreated("2012-01-02 03:04:05".into()));
+    assert_eq!(
+        dates[0],
+        CreationDate::DateCreated("2012-01-02 03:04:05".into())
+    );
     assert_eq!(dates[1], CreationDate::DateCreated("2013-07-07".into()));
 }
 
@@ -501,7 +510,11 @@ fn creation_dates_batch_reports_progress_for_every_file() {
         (1..=paths.len()).collect::<Vec<_>>(),
         "every file must tick exactly once"
     );
-    assert!(totals.into_inner().unwrap().iter().all(|&t| t == paths.len()));
+    assert!(totals
+        .into_inner()
+        .unwrap()
+        .iter()
+        .all(|&t| t == paths.len()));
 }
 
 #[test]

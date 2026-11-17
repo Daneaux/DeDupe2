@@ -107,9 +107,8 @@ pub fn gradient_hash_of(image: &ImageData) -> Option<u64> {
 
 /// pHash of a file: decode (panics contained) then hash the pixels.
 pub fn phash(path: &Path) -> Option<Phash> {
-    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        super::read_image(path)
-    }));
+    let decoded =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::read_image(path)));
     match decoded {
         Ok(Ok(image)) => phash_of(&image),
         _ => None,

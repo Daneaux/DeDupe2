@@ -3,12 +3,12 @@ mod hash;
 mod heic;
 mod isobmff;
 mod jpg;
-mod raster;
-mod thumb;
-mod png;
-mod phash;
 mod movie;
+mod phash;
+mod png;
+mod raster;
 mod raw;
+mod thumb;
 mod types;
 
 use std::path::{Path, PathBuf};
@@ -16,13 +16,13 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 pub use bytes::read_bytes;
-pub use phash::{
-    distance, distance_of, gradient_hash_of, lossy_kind, mean_chroma, phash, phash_of,
-    Phash, DHASH_SIMILAR_MAX_DISTANCE, SIMILAR_MAX_DISTANCE,
-};
 pub use hash::{
-    hash_all_bytes, hash_first_n_bytes, hash_image_data, hash_image_data_all,
-    hash_image_data_n, hash_image_data_status,
+    hash_all_bytes, hash_first_n_bytes, hash_image_data, hash_image_data_all, hash_image_data_n,
+    hash_image_data_status,
+};
+pub use phash::{
+    distance, distance_of, gradient_hash_of, lossy_kind, mean_chroma, phash, phash_of, Phash,
+    DHASH_SIMILAR_MAX_DISTANCE, SIMILAR_MAX_DISTANCE,
 };
 pub use thumb::thumbnail_jpeg;
 pub use types::{ImageData, ImageReaderError, PixelData, ReadLimit};
@@ -49,7 +49,9 @@ fn contain_decoder_panics<T>(
 ) -> Result<T, ImageReaderError> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)) {
         Ok(result) => result,
-        Err(_) => Err(ImageReaderError::new("decoder panicked on a malformed file")),
+        Err(_) => Err(ImageReaderError::new(
+            "decoder panicked on a malformed file",
+        )),
     }
 }
 
@@ -165,7 +167,19 @@ fn sniff_file_type(path: &Path) -> Option<FileType> {
         ) {
             let brand = head.get(8..12);
             let heic_brand = brand
-                .map(|b| matches!(b, b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1" | b"avif" | b"avis"))
+                .map(|b| {
+                    matches!(
+                        b,
+                        b"heic"
+                            | b"heix"
+                            | b"hevc"
+                            | b"hevx"
+                            | b"mif1"
+                            | b"msf1"
+                            | b"avif"
+                            | b"avis"
+                    )
+                })
                 .unwrap_or(false);
             return Some(if heic_brand {
                 FileType::Heic
@@ -190,7 +204,9 @@ fn detect_file_type(path: &Path) -> Result<FileType, ImageReaderError> {
             "png" => Ok(FileType::Png),
             "jpg" | "jpeg" => Ok(FileType::Jpg),
             e if IMAGE_EXTENSIONS.contains(&e) => Ok(FileType::Raster),
-            _ => Err(ImageReaderError::new(format!("unsupported file type: .{ext}"))),
+            _ => Err(ImageReaderError::new(format!(
+                "unsupported file type: .{ext}"
+            ))),
         },
         None => Err(ImageReaderError::new("file has no extension")),
     }
@@ -250,14 +266,14 @@ fn extension_of(path: &Path) -> Option<String> {
 }
 
 const RAW_EXTENSIONS: &[&str] = &[
-    "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "rw2", "orf", "pef", "raf",
-    "dng", "srw", "x3f", "iiq", "erf", "3fr", "kdc", "dcr", "dcs", "mef", "mos", "mrw",
-    "raw", "rwl", "fff", "bay", "ari", "tif", "tiff",
+    "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2", "rw2", "orf", "pef", "raf", "dng",
+    "srw", "x3f", "iiq", "erf", "3fr", "kdc", "dcr", "dcs", "mef", "mos", "mrw", "raw", "rwl",
+    "fff", "bay", "ari", "tif", "tiff",
 ];
 
 const IMAGE_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "webp", "gif", "bmp", "ico", "pnm", "pbm",
-    "pgm", "ppm", "pam", "qoi", "avif", "hdr", "exr", "ff",
+    "jpg", "jpeg", "png", "webp", "gif", "bmp", "ico", "pnm", "pbm", "pgm", "ppm", "pam", "qoi",
+    "avif", "hdr", "exr", "ff",
 ];
 
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "m4v", "mts", "m2ts", "avi"];

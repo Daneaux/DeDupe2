@@ -2,10 +2,10 @@ mod ciff;
 
 pub const EXIF_TIMEOUT: Duration = Duration::from_secs(10);
 
-use std::fmt;
-use std::time::Duration;
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use std::time::SystemTime;
 
 use nom_exif::{read_metadata, ExifTag, Metadata, TrackInfoTag};
@@ -56,7 +56,12 @@ pub fn creation_date_with_timeout(path: &Path, timeout: Duration) -> CreationDat
 /// the same per-file time limit. Unlike [`creation_date`] it never falls back
 /// to the folder name, so it tells whether a file carries its own date.
 pub fn embedded_capture_date(path: &Path) -> Option<CreationDate> {
-    match date_with_timeout(path, EXIF_TIMEOUT, creation_date_readers, CreationDate::Unknown) {
+    match date_with_timeout(
+        path,
+        EXIF_TIMEOUT,
+        creation_date_readers,
+        CreationDate::Unknown,
+    ) {
         CreationDate::Unknown => None,
         date => Some(date),
     }
@@ -230,7 +235,13 @@ fn tiff_xmp_bytes(path: &Path) -> Option<Vec<u8>> {
         b"MM" => false,
         _ => return None,
     };
-    let rd16 = |b: &[u8]| if little { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) };
+    let rd16 = |b: &[u8]| {
+        if little {
+            u16::from_le_bytes([b[0], b[1]])
+        } else {
+            u16::from_be_bytes([b[0], b[1]])
+        }
+    };
     let rd32 = |b: &[u8]| {
         if little {
             u32::from_le_bytes([b[0], b[1], b[2], b[3]])
@@ -263,7 +274,11 @@ fn tiff_xmp_bytes(path: &Path) -> Option<Vec<u8>> {
             if count == 0 || count > XMP_PACKET_MAX {
                 return None;
             }
-            let pos = if count <= 4 { ifd_off + 2 + (i as u64) * 12 + 8 } else { rd32(&e[8..12]) as u64 };
+            let pos = if count <= 4 {
+                ifd_off + 2 + (i as u64) * 12 + 8
+            } else {
+                rd32(&e[8..12]) as u64
+            };
             f.seek(SeekFrom::Start(pos)).ok()?;
             let mut out = vec![0u8; count];
             f.read_exact(&mut out).ok()?;
@@ -300,9 +315,7 @@ fn stream_scan_xmp(path: &Path) -> Option<Vec<u8>> {
                 if buf.len() >= start + XMP_PACKET_MAX {
                     break;
                 }
-                let close = buf[start..]
-                    .windows(11)
-                    .position(|w| w == b"</x:xmpmeta");
+                let close = buf[start..].windows(11).position(|w| w == b"</x:xmpmeta");
                 if close.is_some() {
                     break;
                 }
@@ -336,7 +349,11 @@ fn find_xmp_marker(buf: &[u8]) -> Option<usize> {
 /// xmp:CreateDate.
 fn xmp_date(packet: &[u8]) -> Option<CreationDate> {
     let text = String::from_utf8_lossy(packet);
-    for tag in ["exif:DateTimeOriginal", "photoshop:DateCreated", "xmp:CreateDate"] {
+    for tag in [
+        "exif:DateTimeOriginal",
+        "photoshop:DateCreated",
+        "xmp:CreateDate",
+    ] {
         if let Some(value) = xmp_attribute(&text, tag) {
             if let Some(date) = xmp_timestamp(value) {
                 return Some(date);
@@ -374,9 +391,14 @@ fn xmp_timestamp(value: &str) -> Option<CreationDate> {
     let time = match b.get(10) {
         Some(b'T')
             if b.len() >= 19
-                && digit(11) && digit(12) && b.get(13) == Some(&b':')
-                && digit(14) && digit(15) && b.get(16) == Some(&b':')
-                && digit(17) && digit(18) =>
+                && digit(11)
+                && digit(12)
+                && b.get(13) == Some(&b':')
+                && digit(14)
+                && digit(15)
+                && b.get(16) == Some(&b':')
+                && digit(17)
+                && digit(18) =>
         {
             Some(std::str::from_utf8(&b[11..19]).ok()?.to_string())
         }
@@ -405,7 +427,12 @@ pub fn creation_dates_batch(
     let mut dates: Vec<CreationDate> = paths
         .par_iter()
         .map(|path| {
-            let date = date_with_timeout(path, EXIF_TIMEOUT, creation_date_readers, CreationDate::Unknown);
+            let date = date_with_timeout(
+                path,
+                EXIF_TIMEOUT,
+                creation_date_readers,
+                CreationDate::Unknown,
+            );
             // Report as each file resolves so the UI moves during the (slow)
             // reader pass — not only after the whole pass has finished.
             progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
@@ -479,10 +506,8 @@ fn exiftool_dates_batch(paths: &[PathBuf]) -> Result<HashMap<PathBuf, CreationDa
         return Ok(HashMap::new());
     }
 
-    let argsfile = std::env::temp_dir().join(format!(
-        "dedupe2-exiftool-{}.args",
-        std::process::id()
-    ));
+    let argsfile =
+        std::env::temp_dir().join(format!("dedupe2-exiftool-{}.args", std::process::id()));
     let mut f = std::fs::File::create(&argsfile).map_err(|_| ())?;
     for opt in [
         "-q",
@@ -505,10 +530,7 @@ fn exiftool_dates_batch(paths: &[PathBuf]) -> Result<HashMap<PathBuf, CreationDa
     }
     drop(f);
 
-    let out = Command::new("exiftool")
-        .arg("-@")
-        .arg(&argsfile)
-        .output();
+    let out = Command::new("exiftool").arg("-@").arg(&argsfile).output();
     let _ = std::fs::remove_file(&argsfile);
 
     let out = out.map_err(|_| ())?;
@@ -546,7 +568,13 @@ pub fn pick_exiftool_date(row: &serde_json::Value) -> Option<CreationDate> {
     ];
     // For equal tag names, prefer the group closer to the camera.
     const GROUP_PREFERENCE: &[&str] = &[
-        "ExifIFD:", "XMP:", "Composite:", "QuickTime:", "Track:", "M2TS:", "IPTC:",
+        "ExifIFD:",
+        "XMP:",
+        "Composite:",
+        "QuickTime:",
+        "Track:",
+        "M2TS:",
+        "IPTC:",
     ];
 
     let obj = row.as_object()?;
@@ -562,8 +590,7 @@ pub fn pick_exiftool_date(row: &serde_json::Value) -> Option<CreationDate> {
         let mut keys: Vec<&String> = obj
             .keys()
             .filter(|k| {
-                tag_name(k) == *name
-                    && obj.get(k.as_str()).map(|v| v.is_string()).unwrap_or(false)
+                tag_name(k) == *name && obj.get(k.as_str()).map(|v| v.is_string()).unwrap_or(false)
             })
             .collect();
         keys.sort_by_key(|k| (group_rank(k), k.as_str()));
@@ -647,9 +674,10 @@ fn exiftool_timestamp(raw: &str, time: Option<&str>) -> Option<CreationDate> {
         }
     }
 
-    Some(CreationDate::DateCreated(day.format("%Y-%m-%d").to_string()))
+    Some(CreationDate::DateCreated(
+        day.format("%Y-%m-%d").to_string(),
+    ))
 }
-
 
 /// Pick the capture date from rawler's parsed EXIF fields, in priority
 /// order: DateTimeOriginal (when the shutter fired) > CreateDate > ModifyDate
@@ -681,8 +709,10 @@ pub fn select_capture_date(exif: &rawler::exif::Exif) -> Option<CreationDate> {
 /// read from the file), so the whole decode is unwound per file and treated
 /// like any other unreadable file.
 fn raw_creation_date(path: &Path) -> CreationDate {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| raw_creation_date_inner(path)))
-        .unwrap_or(CreationDate::Unknown)
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        raw_creation_date_inner(path)
+    }))
+    .unwrap_or(CreationDate::Unknown)
 }
 
 fn raw_creation_date_inner(path: &Path) -> CreationDate {
@@ -697,10 +727,11 @@ fn raw_creation_date_inner(path: &Path) -> CreationDate {
         Err(_) => return CreationDate::Unknown,
     };
 
-    let metadata = match decoder.raw_metadata(&rawfile, &rawler::decoders::RawDecodeParams::default()) {
-        Ok(metadata) => metadata,
-        Err(_) => return CreationDate::Unknown,
-    };
+    let metadata =
+        match decoder.raw_metadata(&rawfile, &rawler::decoders::RawDecodeParams::default()) {
+            Ok(metadata) => metadata,
+            Err(_) => return CreationDate::Unknown,
+        };
 
     // Prefer the EXIF capture dates (DateTimeOriginal > CreateDate >
     // ModifyDate). rawler's `last_modified()` only reads ModifyDate (0x0132,

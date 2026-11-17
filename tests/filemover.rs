@@ -42,7 +42,10 @@ fn organize_by_date_builds_event_structure() {
 
     organize_by_date(&files, dst.path(), "jan hawaii wedding", Operation::Copy).unwrap();
 
-    assert!(dst.path().join("2023/03-15-hawaii-wedding/photo.jpg").exists());
+    assert!(dst
+        .path()
+        .join("2023/03-15-hawaii-wedding/photo.jpg")
+        .exists());
 }
 
 #[test]
@@ -142,12 +145,8 @@ fn purgatory_move_preserves_tree_structure_and_prunes_empty_dirs() {
     std::fs::write(&b, b"content-b").unwrap();
     std::fs::write(&keep, b"keep-me").unwrap();
 
-    let outcome = move_to_purgatory_with_progress(
-        &[a.clone(), b.clone()],
-        root,
-        purg.path(),
-        &|_, _| {},
-    );
+    let outcome =
+        move_to_purgatory_with_progress(&[a.clone(), b.clone()], root, purg.path(), &|_, _| {});
 
     assert_eq!(outcome.planned, 2);
     assert_eq!(outcome.moved, 2, "failures: {:?}", outcome.failures);
@@ -168,7 +167,10 @@ fn purgatory_move_preserves_tree_structure_and_prunes_empty_dirs() {
     assert!(!b.exists());
     assert!(!root.join("2013/07-30").exists());
     assert!(!root.join("2013/07-31").exists());
-    assert!(!root.join("2013").exists(), "year folder became empty and must go");
+    assert!(
+        !root.join("2013").exists(),
+        "year folder became empty and must go"
+    );
     assert!(keep.exists());
     assert!(root.join("2012").exists());
     assert!(root.exists(), "the candidate root itself is never removed");
@@ -191,12 +193,8 @@ fn purgatory_move_renames_collisions_and_never_overwrites() {
     std::fs::create_dir_all(purg.path().join("ev")).unwrap();
     std::fs::write(purg.path().join("ev/IMG_0500.JPG"), b"old bytes").unwrap();
 
-    let outcome = move_to_purgatory_with_progress(
-        &[src_file.clone()],
-        root,
-        purg.path(),
-        &|_, _| {},
-    );
+    let outcome =
+        move_to_purgatory_with_progress(&[src_file.clone()], root, purg.path(), &|_, _| {});
 
     assert_eq!(outcome.moved, 1);
     assert_eq!(outcome.renamed_on_collision, 1);
@@ -237,7 +235,10 @@ fn purgatory_move_reports_failures_and_leaves_sources_in_place() {
 
     assert_eq!(outcome.moved, 1);
     assert_eq!(outcome.failures.len(), 2);
-    assert!(outcome.failures.iter().any(|(p, r)| p == &missing && r.contains("not readable")));
+    assert!(outcome
+        .failures
+        .iter()
+        .any(|(p, r)| p == &missing && r.contains("not readable")));
     assert!(outcome
         .failures
         .iter()
@@ -269,8 +270,14 @@ fn organize_rejects_confirmed_duplicates_and_moves_the_rest() {
     std::fs::write(&existing, &img).unwrap();
 
     let dated = vec![
-        (a.clone(), CreationDate::DateCreated("2005-01-10 10:00:00".into())),
-        (b.clone(), CreationDate::DateCreated("2005-01-10 11:00:00".into())),
+        (
+            a.clone(),
+            CreationDate::DateCreated("2005-01-10 10:00:00".into()),
+        ),
+        (
+            b.clone(),
+            CreationDate::DateCreated("2005-01-10 11:00:00".into()),
+        ),
     ];
     let outcome = organize_into_destination_with_progress(
         &dated,
@@ -324,7 +331,10 @@ fn organize_deep_scan_stops_shallow_lookalikes() {
     std::fs::write(&source, video(b"BBBB-actual")).unwrap();
     std::fs::write(dest.join("2005/01-10/existing.mp4"), video(b"AAAA-other")).unwrap();
 
-    let dated = vec![(source.clone(), CreationDate::DateCreated("2005-01-10".into()))];
+    let dated = vec![(
+        source.clone(),
+        CreationDate::DateCreated("2005-01-10".into()),
+    )];
     let outcome = organize_into_destination_with_progress(
         &dated,
         &dest,
@@ -333,7 +343,10 @@ fn organize_deep_scan_stops_shallow_lookalikes() {
         &|_, _| {},
     );
 
-    assert_eq!(outcome.moved, 1, "shallow-only match must still move: {outcome:?}");
+    assert_eq!(
+        outcome.moved, 1,
+        "shallow-only match must still move: {outcome:?}"
+    );
     assert!(outcome.rejected_duplicates.is_empty());
     assert!(dest.join("2005/01-10/clip.mp4").exists());
 }
@@ -385,28 +398,35 @@ fn table_transfer_copies_verifies_and_moves_flat() {
     std::fs::write(dest.join("photo.jpg"), b"already-here").unwrap();
 
     // Copy: flat destination, collision renamed, sources intact.
-    let outcome = transfer_files_with_progress(
-        &[a.clone(), b.clone()],
-        &dest,
-        Operation::Copy,
-        &|_, _| {},
-    );
+    let outcome =
+        transfer_files_with_progress(&[a.clone(), b.clone()], &dest, Operation::Copy, &|_, _| {});
     assert_eq!(outcome.planned, 2);
     assert_eq!(outcome.transferred, 2, "{outcome:?}");
     assert_eq!(outcome.renamed_on_collision, 2);
     assert!(outcome.failures.is_empty(), "{outcome:?}");
-    assert_eq!(std::fs::read(dest.join("photo.jpg")).unwrap(), b"already-here");
-    assert_eq!(std::fs::read(dest.join("photo (1).jpg")).unwrap(), b"content-a");
-    assert_eq!(std::fs::read(dest.join("photo (2).jpg")).unwrap(), b"content-b");
+    assert_eq!(
+        std::fs::read(dest.join("photo.jpg")).unwrap(),
+        b"already-here"
+    );
+    assert_eq!(
+        std::fs::read(dest.join("photo (1).jpg")).unwrap(),
+        b"content-a"
+    );
+    assert_eq!(
+        std::fs::read(dest.join("photo (2).jpg")).unwrap(),
+        b"content-b"
+    );
     assert!(a.exists() && b.exists(), "copy keeps the sources");
 
     // Move: verified then removed.
     let dest2 = root.path().join("export2");
-    let outcome =
-        transfer_files_with_progress(&[a.clone()], &dest2, Operation::Move, &|_, _| {});
+    let outcome = transfer_files_with_progress(&[a.clone()], &dest2, Operation::Move, &|_, _| {});
     assert_eq!(outcome.transferred, 1, "{outcome:?}");
     assert!(!a.exists(), "move removes the source after verification");
-    assert_eq!(std::fs::read(dest2.join("photo.jpg")).unwrap(), b"content-a");
+    assert_eq!(
+        std::fs::read(dest2.join("photo.jpg")).unwrap(),
+        b"content-a"
+    );
 
     // Missing sources are reported and nothing else is affected.
     let outcome = transfer_files_with_progress(

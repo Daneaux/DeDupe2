@@ -5,7 +5,9 @@ fn read_u32(data: &[u8], pos: usize) -> Option<u32> {
 
 fn read_u64(data: &[u8], pos: usize) -> Option<u64> {
     let b = data.get(pos..pos + 8)?;
-    Some(u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+    Some(u64::from_be_bytes([
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+    ]))
 }
 
 fn read_box_header(data: &[u8], pos: usize) -> Option<(usize, [u8; 4])> {
@@ -72,7 +74,9 @@ fn largest_sample(data: &[u8], trak_start: usize, trak_end: usize) -> Option<(us
             }
             b"co64" => {
                 let count = read_u32(data, pos + 12)? as usize;
-                chunk_offsets = (0..count).filter_map(|i| read_u64(data, pos + 16 + i * 8)).collect();
+                chunk_offsets = (0..count)
+                    .filter_map(|i| read_u64(data, pos + 16 + i * 8))
+                    .collect();
             }
             b"stsc" => {
                 let count = read_u32(data, pos + 12)? as usize;

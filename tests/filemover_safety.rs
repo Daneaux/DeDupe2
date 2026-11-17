@@ -160,8 +160,8 @@ fn keep_both_collisions_are_renamed_not_overwritten() {
     let purgatory = root.path().join("purgatory");
     std::fs::create_dir_all(&a_root).unwrap();
 
-    let original = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/TestImages/jpg-exif-mod/image1.JPG");
+    let original =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/jpg-exif-mod/image1.JPG");
     let fixture = std::fs::read(&original).unwrap();
 
     let a_one = a_root.join("one.jpg");
@@ -223,19 +223,20 @@ fn transfer_collision_renames_instead_of_overwriting() {
     std::fs::create_dir_all(&destination).unwrap();
     std::fs::write(destination.join("photo.jpg"), b"existing").unwrap();
 
-    let outcome = transfer_files_with_progress(
-        &[source.clone()],
-        &destination,
-        Operation::Copy,
-        &|_, _| {},
-    );
+    let outcome =
+        transfer_files_with_progress(&[source.clone()], &destination, Operation::Copy, &|_, _| {});
 
     assert_eq!(outcome.transferred, 1, "{outcome:?}");
     assert_eq!(outcome.renamed_on_collision, 1);
-    assert_eq!(std::fs::read(destination.join("photo.jpg")).unwrap(), b"existing");
-    assert_eq!(std::fs::read(destination.join("photo (1).jpg")).unwrap(), b"new");
+    assert_eq!(
+        std::fs::read(destination.join("photo.jpg")).unwrap(),
+        b"existing"
+    );
+    assert_eq!(
+        std::fs::read(destination.join("photo (1).jpg")).unwrap(),
+        b"new"
+    );
 }
-
 
 /// Tree relocation and date organizing target exact paths; when a file is
 /// already there it must be reported, never replaced (a rename would
@@ -252,8 +253,14 @@ fn exact_path_relocations_never_overwrite_existing_files() {
         std::fs::write(dst.path().join("a.jpg"), b"precious").unwrap();
 
         assert!(relocate_tree(src.path(), dst.path(), op).is_err(), "{op:?}");
-        assert_eq!(std::fs::read(dst.path().join("a.jpg")).unwrap(), b"precious");
-        assert_eq!(std::fs::read(src.path().join("a.jpg")).unwrap(), b"incoming");
+        assert_eq!(
+            std::fs::read(dst.path().join("a.jpg")).unwrap(),
+            b"precious"
+        );
+        assert_eq!(
+            std::fs::read(src.path().join("a.jpg")).unwrap(),
+            b"incoming"
+        );
     }
 
     // organize_by_date reserves fresh names, so it lands next to the
@@ -266,10 +273,16 @@ fn exact_path_relocations_never_overwrite_existing_files() {
     let incoming = src.path().join("a.jpg");
     std::fs::write(&incoming, b"incoming").unwrap();
 
-    let files = [(incoming.clone(), CreationDate::DateCreated("2020:01:02 03:04:05".into()))];
+    let files = [(
+        incoming.clone(),
+        CreationDate::DateCreated("2020:01:02 03:04:05".into()),
+    )];
     organize_by_date(&files, dst.path(), "", Operation::Move).unwrap();
 
     assert_eq!(std::fs::read(&existing).unwrap(), b"precious");
-    assert_eq!(std::fs::read(dst.path().join("2020/01-02/a (1).jpg")).unwrap(), b"incoming");
+    assert_eq!(
+        std::fs::read(dst.path().join("2020/01-02/a (1).jpg")).unwrap(),
+        b"incoming"
+    );
     assert!(!incoming.exists());
 }

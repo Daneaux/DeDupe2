@@ -62,11 +62,23 @@ fn unrelated_photos_are_far_apart() {
 
 #[test]
 fn lossy_kind_groups_only_matching_families() {
-    assert_eq!(lossy_kind(Path::new("a.jpg")), lossy_kind(Path::new("b.JPEG")));
-    assert_eq!(lossy_kind(Path::new("a.heic")), lossy_kind(Path::new("b.HEIF")));
+    assert_eq!(
+        lossy_kind(Path::new("a.jpg")),
+        lossy_kind(Path::new("b.JPEG"))
+    );
+    assert_eq!(
+        lossy_kind(Path::new("a.heic")),
+        lossy_kind(Path::new("b.HEIF"))
+    );
     assert!(lossy_kind(Path::new("a.jpg")) != lossy_kind(Path::new("b.heic")));
-    assert!(lossy_kind(Path::new("a.png")).is_none(), "lossless is not phash-compared");
-    assert!(lossy_kind(Path::new("a.cr2")).is_none(), "raw is not phash-compared");
+    assert!(
+        lossy_kind(Path::new("a.png")).is_none(),
+        "lossless is not phash-compared"
+    );
+    assert!(
+        lossy_kind(Path::new("a.cr2")).is_none(),
+        "raw is not phash-compared"
+    );
 }
 
 #[test]

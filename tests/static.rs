@@ -104,7 +104,11 @@ fn preview_columns_use_unique_fields_and_the_formatter_is_idempotent() {
         .filter(|line| line.contains("title: \"Preview\""))
         .collect();
 
-    assert_eq!(previews.len(), 2, "groups + matches tables each have a preview column");
+    assert_eq!(
+        previews.len(),
+        2,
+        "groups + matches tables each have a preview column"
+    );
     for line in previews {
         assert!(
             line.contains("field: \"preview\""),

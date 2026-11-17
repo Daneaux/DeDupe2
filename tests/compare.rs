@@ -1,11 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use dedupe2::Scanner::compare::compare_folders;
 use dedupe2::exif::creation_date;
+use dedupe2::Scanner::compare::compare_folders;
 
 fn sample(rel: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages").join(rel);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/TestImages")
+        .join(rel);
     fs::read(path).expect("sample image should exist")
 }
 
@@ -51,8 +53,6 @@ fn compare_reports_duplicates_and_originals() {
     assert_eq!(names(&cmp.a_only), vec!["a2.jpg".to_string()]);
     assert_eq!(names(&cmp.b_only), vec!["b2.heic".to_string()]);
 }
-
-
 
 #[test]
 fn compare_with_no_overlap_reports_all_originals() {
@@ -104,8 +104,13 @@ fn copy_originals_copies_only_valid_exif_into_formatted_folders() {
     // a file with no recognizable EXIF
     std::fs::write(candidate.join("noexif.jpg"), b"\xFF\xD8 truncated").unwrap();
 
-    let originals = vec![candidate.join("new1.jpg"), candidate.join("new2.jpg"), candidate.join("noexif.jpg")];
-    let outcome = copy_originals(&originals, &destination, "YYYY/MM-DD <folder description>").unwrap();
+    let originals = vec![
+        candidate.join("new1.jpg"),
+        candidate.join("new2.jpg"),
+        candidate.join("noexif.jpg"),
+    ];
+    let outcome =
+        copy_originals(&originals, &destination, "YYYY/MM-DD <folder description>").unwrap();
 
     assert_eq!(outcome.copied, 2);
     assert_eq!(outcome.skipped_no_exif, 1);
@@ -129,7 +134,11 @@ fn undecodable_files_are_listed_as_unreadable() {
     write(&a, "ok.jpg", &sample("jpg-exif-mod/image1.JPG"));
     std::fs::create_dir_all(&b).unwrap();
     std::fs::write(b.join("broken.cr2"), b"\xFF\x44\x00\x17\xAB\xCD\xEF\x01").unwrap();
-    std::fs::write(a.join("broken-too.cr2"), b"\xFF\x44\x00\x17\xAB\xCD\xEF\x02").unwrap();
+    std::fs::write(
+        a.join("broken-too.cr2"),
+        b"\xFF\x44\x00\x17\xAB\xCD\xEF\x02",
+    )
+    .unwrap();
 
     let cmp = compare_folders(&a, &b).unwrap();
 
@@ -191,18 +200,25 @@ fn compare_sets_reports_the_four_numbers() {
         std::fs::create_dir_all(d).unwrap();
     }
 
-    let img = sample("jpg-exif-mod/image1.JPG");      // shared photo
+    let img = sample("jpg-exif-mod/image1.JPG"); // shared photo
     let img_exif = sample("jpg-exif-mod/image1-exif.JPG"); // same image data
-    let heic = sample("HEIC-exif-mod/heic1.HEIC");   // distinct image
+    let heic = sample("HEIC-exif-mod/heic1.HEIC"); // distinct image
 
     // Two distinct synthesized photos (different pixels -> different hashes).
     let synth = |seed: u8| {
         let img = image::DynamicImage::ImageRgb8(image::ImageBuffer::from_fn(8, 8, |x, y| {
-            image::Rgb([((x as u8 * 13).wrapping_add(seed)), ((y as u8 * 29).wrapping_add(seed)), seed])
+            image::Rgb([
+                ((x as u8 * 13).wrapping_add(seed)),
+                ((y as u8 * 29).wrapping_add(seed)),
+                seed,
+            ])
         }));
         let mut buf = Vec::new();
-        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Jpeg)
-            .unwrap();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut buf),
+            image::ImageFormat::Jpeg,
+        )
+        .unwrap();
         buf
     };
     let a_only_img = synth(1);
@@ -228,20 +244,19 @@ fn compare_sets_reports_the_four_numbers() {
     // #2 unique to B / unique to C (not in A, not in any other set)
     assert_eq!(cmp.candidates[0].unique_to_tree, 1); // b_only.jpg
     assert_eq!(cmp.candidates[1].unique_to_tree, 0); // c_and_b is shared with B
-    // #3 candidates-only (not in A)
+                                                     // #3 candidates-only (not in A)
     assert_eq!(cmp.candidates_only, 3); // b_only + b_and_c + c_and_b
-    // #4 duplicates between A and B+C
+                                        // #4 duplicates between A and B+C
     assert_eq!(cmp.duplicates, 2); // b_dup + c_dup
 
     // The cached path must produce identical numbers from one scan per tree,
     // and a repeated call must reuse every hash.
-    use std::sync::Mutex;
     use dedupe2::Scanner::cache::ScanCache;
     use dedupe2::Scanner::compare::compare_sets_cached;
+    use std::sync::Mutex;
 
     let cache = Mutex::new(ScanCache::new());
-    let cached =
-        compare_sets_cached(&a, &[b.clone(), c.clone()], &cache, &|_, _| {}).unwrap();
+    let cached = compare_sets_cached(&a, &[b.clone(), c.clone()], &cache, &|_, _| {}).unwrap();
     assert_eq!(cached.a_total, cmp.a_total);
     assert_eq!(cached.a_unique, cmp.a_unique);
     assert_eq!(cached.a_unreadable, cmp.a_unreadable);
@@ -264,8 +279,8 @@ fn compare_sets_reports_the_four_numbers() {
 
 #[test]
 fn destination_root_ending_with_year_is_not_doubled() {
-    use dedupe2::filemover::{destination_for, transfer_originals_with_progress, Operation};
     use dedupe2::exif::CreationDate;
+    use dedupe2::filemover::{destination_for, transfer_originals_with_progress, Operation};
 
     let root = tempfile::tempdir().unwrap();
     let candidate = root.path().join("candidate/03-15 hawaii");
@@ -287,8 +302,14 @@ fn destination_root_ending_with_year_is_not_doubled() {
     )
     .unwrap();
     let target_str = target.display().to_string();
-    assert!(!target_str.contains("2022/2022"), "doubled year in {target_str}");
-    assert!(target_str.ends_with("library/2022/08-17 hawaii/new1.jpg"), "{target_str}");
+    assert!(
+        !target_str.contains("2022/2022"),
+        "doubled year in {target_str}"
+    );
+    assert!(
+        target_str.ends_with("library/2022/08-17 hawaii/new1.jpg"),
+        "{target_str}"
+    );
 
     // And the actual transfer lands there.
     let outcome = transfer_originals_with_progress(
@@ -342,7 +363,10 @@ fn full_date_source_folder_is_treated_as_date_not_description() {
     )
     .unwrap();
     assert!(
-        target2.display().to_string().ends_with("library/2022/08-17 Hawaii/new2.jpg"),
+        target2
+            .display()
+            .to_string()
+            .ends_with("library/2022/08-17 Hawaii/new2.jpg"),
         "got {}",
         target2.display()
     );
@@ -355,7 +379,7 @@ fn verify_tree_flags_wrong_folder_placements() {
     let root = tempfile::tempdir().unwrap();
     let lib = root.path().join("library");
     let img = sample("jpg-exif-mod/image1.JPG"); // EXIF 2022-08-17
-    let fake = b"\xFF\xD8 truncated, no exif";   // undetectable date
+    let fake = b"\xFF\xD8 truncated, no exif"; // undetectable date
 
     // OK: folder date matches EXIF date.
     std::fs::create_dir_all(lib.join("2022/08-17 hawaii")).unwrap();
@@ -404,10 +428,7 @@ fn rehome_is_safe_copy_verify_then_remove() {
     std::fs::create_dir_all(lib.join("2022/08-17")).unwrap();
     std::fs::write(lib.join("2022/08-17/wrong.jpg"), b"PRE-EXISTING-KEEP-ME").unwrap();
 
-    let mismatches = vec![(
-        lib.join("2010/05-30/wrong.jpg"),
-        "2022-08-17".to_string(),
-    )];
+    let mismatches = vec![(lib.join("2010/05-30/wrong.jpg"), "2022-08-17".to_string())];
     let plans = plan_rehome(&mismatches, &lib, "YYYY/MM-DD <folder description>");
     assert_eq!(plans.len(), 1);
     assert!(plans[0]
@@ -461,21 +482,28 @@ fn rehome_never_overwrites_case_insensitive_name_collision() {
     );
     // Content B must be present under an auto-renamed name.
     let landed = lib.join("2012/09-27/IMG_0500 (1).jpg");
-    assert!(landed.exists(), "incoming file must be renamed, not overwrite");
+    assert!(
+        landed.exists(),
+        "incoming file must be renamed, not overwrite"
+    );
     assert_eq!(fs::read(landed).unwrap(), b"content-b-low-res");
 }
 
 #[test]
 fn transfer_uses_carried_dates_without_reextraction() {
-    use dedupe2::filemover::{transfer_dated_with_progress, Operation};
     use dedupe2::exif::CreationDate;
+    use dedupe2::filemover::{transfer_dated_with_progress, Operation};
 
     let root = tempfile::tempdir().unwrap();
     let candidate = root.path().join("candidate/09-27");
     std::fs::create_dir_all(&candidate).unwrap();
 
     // This file's real EXIF date is 2022-08-17...
-    std::fs::write(candidate.join("IMG_0500.jpg"), &sample("jpg-exif-mod/image1.JPG")).unwrap();
+    std::fs::write(
+        candidate.join("IMG_0500.jpg"),
+        &sample("jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
 
     // ...but we CARRY a different (parseable) date. If the transfer re-extracted,
     // the file would land in 2022/08-17 instead.
@@ -494,26 +522,27 @@ fn transfer_uses_carried_dates_without_reextraction() {
     .unwrap();
 
     assert_eq!(outcome.copied, 1);
-    assert!(root
-        .path()
-        .join("library/2010/05-30/IMG_0500.jpg")
-        .exists(), "carried date must be used, not re-extracted");
-    assert!(!root
-        .path()
-        .join("library/2022/08-17/IMG_0500.jpg")
-        .exists());
+    assert!(
+        root.path().join("library/2010/05-30/IMG_0500.jpg").exists(),
+        "carried date must be used, not re-extracted"
+    );
+    assert!(!root.path().join("library/2022/08-17/IMG_0500.jpg").exists());
     assert!(!candidate.join("IMG_0500.jpg").exists()); // moved
 }
 
 #[test]
 fn transfer_falls_back_to_extraction_for_files_without_carried_dates() {
-    use dedupe2::filemover::{transfer_dated_with_progress, Operation};
     use dedupe2::exif::CreationDate;
+    use dedupe2::filemover::{transfer_dated_with_progress, Operation};
 
     let root = tempfile::tempdir().unwrap();
     let candidate = root.path().join("candidate");
     std::fs::create_dir_all(&candidate).unwrap();
-    std::fs::write(candidate.join("dated.jpg"), &sample("jpg-exif-mod/image1.JPG")).unwrap();
+    std::fs::write(
+        candidate.join("dated.jpg"),
+        &sample("jpg-exif-mod/image1.JPG"),
+    )
+    .unwrap();
     std::fs::write(candidate.join("undated.jpg"), b"\xFF\xD8 no exif").unwrap();
 
     // Carry a date only for the first file; the second must fall back to
@@ -546,8 +575,8 @@ fn transfer_falls_back_to_extraction_for_files_without_carried_dates() {
 
 #[test]
 fn description_tokens_survive_date_substitution() {
-    use dedupe2::filemover::{destination_for, Operation, transfer_dated_with_progress};
     use dedupe2::exif::CreationDate;
+    use dedupe2::filemover::{destination_for, transfer_dated_with_progress, Operation};
 
     let root = tempfile::tempdir().unwrap();
 
@@ -583,7 +612,6 @@ fn description_tokens_survive_date_substitution() {
     assert_eq!(outcome.copied, 1);
     assert!(root.path().join("library/2012/08-17 MM/x.jpg").exists());
 }
-
 
 fn boxed(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
     let size = (payload.len() as u32) + 8;
@@ -626,9 +654,15 @@ fn deep_scan_treats_videos_differing_past_the_64kb_head_as_false_positives() {
         "fixture should share the 64kb head hash"
     );
 
-    let outcome = deep_scan_pairs(&[DupPair { a: a_path, b: b_path }]);
+    let outcome = deep_scan_pairs(&[DupPair {
+        a: a_path,
+        b: b_path,
+    }]);
     assert_eq!(outcome.checked, 1);
-    assert_eq!(outcome.kept, 0, "videos with different full payloads are not duplicates");
+    assert_eq!(
+        outcome.kept, 0,
+        "videos with different full payloads are not duplicates"
+    );
     assert_eq!(outcome.removed.len(), 1);
 }
 
@@ -645,7 +679,10 @@ fn deep_scan_keeps_videos_with_identical_content() {
     fs::write(&a_path, &movie).unwrap();
     fs::write(&b_path, &movie).unwrap();
 
-    let outcome = deep_scan_pairs(&[DupPair { a: a_path, b: b_path }]);
+    let outcome = deep_scan_pairs(&[DupPair {
+        a: a_path,
+        b: b_path,
+    }]);
     assert_eq!(outcome.kept, 1);
     assert!(outcome.removed.is_empty());
 }
@@ -670,8 +707,14 @@ fn deep_scan_keeps_photos_identical_except_metadata() {
     bytes[flip] ^= 0x01;
     write(root.path(), "b.jpg", &bytes);
 
-    let outcome = deep_scan_pairs(&[DupPair { a: a_path, b: b_path }]);
-    assert_eq!(outcome.kept, 1, "metadata-only differences must stay duplicates");
+    let outcome = deep_scan_pairs(&[DupPair {
+        a: a_path,
+        b: b_path,
+    }]);
+    assert_eq!(
+        outcome.kept, 1,
+        "metadata-only differences must stay duplicates"
+    );
     assert!(outcome.removed.is_empty());
 }
 
@@ -743,12 +786,20 @@ fn deep_scan_confirms_byte_identical_duplicates_in_cross_product_groups() {
     let pairs: Vec<DupPair> = group
         .a
         .iter()
-        .flat_map(|x| group.b.iter().map(move |y| DupPair { a: x.clone(), b: y.clone() }))
+        .flat_map(|x| {
+            group.b.iter().map(move |y| DupPair {
+                a: x.clone(),
+                b: y.clone(),
+            })
+        })
         .collect();
     assert_eq!(pairs.len(), 4);
 
     let outcome = deep_scan_pairs(&pairs);
-    assert_eq!(outcome.kept, 4, "byte-identical cross pairs must all be confirmed");
+    assert_eq!(
+        outcome.kept, 4,
+        "byte-identical cross pairs must all be confirmed"
+    );
     assert!(outcome.removed.is_empty(), "removed: {:?}", outcome.removed);
 }
 
@@ -781,8 +832,8 @@ fn deep_scan_confirms_byte_identical_raw_pairs() {
 #[test]
 #[ignore]
 fn fixed_0857_pair_shallow_then_full_hash_confirmed() {
-    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
     use dedupe2::image_reader::{hash_all_bytes, hash_image_data_all, hash_image_data_status};
+    use dedupe2::Scanner::compare::{deep_scan_pairs, DupPair};
 
     let a = std::path::Path::new(
         "/Users/dannydalal/4tbext/SrcImageFolders/Single Events/Original 2000-2019/2013/2013-07-30/IMG_0857.MOV",
@@ -856,17 +907,29 @@ fn deep_scan_reports_no_false_positives_or_originals_when_every_b_matches_some_a
     let pairs: Vec<DupPair> = group
         .a
         .iter()
-        .flat_map(|x| group.b.iter().map(move |y| DupPair { a: x.clone(), b: y.clone() }))
+        .flat_map(|x| {
+            group.b.iter().map(move |y| DupPair {
+                a: x.clone(),
+                b: y.clone(),
+            })
+        })
         .collect();
     assert_eq!(pairs.len(), 4);
 
     let outcome = deep_scan_pairs(&pairs);
     // (a1,b1) and (a2,b2) confirmed; (a1,b2)/(a2,b1) are shallow-only links.
     assert_eq!(outcome.kept, 2, "{outcome:?}");
-    assert!(outcome.removed.is_empty(), "cross rows must be suppressed: {outcome:?}");
+    assert!(
+        outcome.removed.is_empty(),
+        "cross rows must be suppressed: {outcome:?}"
+    );
     assert_eq!(outcome.covered, 2);
     // No B file is a genuine false positive, so nothing feeds the originals.
-    let promoted: Vec<_> = outcome.removed.iter().map(|p| p.b.to_string_lossy()).collect();
+    let promoted: Vec<_> = outcome
+        .removed
+        .iter()
+        .map(|p| p.b.to_string_lossy())
+        .collect();
     assert!(promoted.is_empty());
 }
 
@@ -884,15 +947,32 @@ fn deep_scan_keeps_false_positive_when_b_matches_no_a_at_all() {
     fs::write(&b1, head_shared_video(b"CCCC-third-content")).unwrap();
 
     let outcome = deep_scan_pairs(&[
-        DupPair { a: a1.clone(), b: b1.clone() },
-        DupPair { a: a2.clone(), b: b1.clone() },
+        DupPair {
+            a: a1.clone(),
+            b: b1.clone(),
+        },
+        DupPair {
+            a: a2.clone(),
+            b: b1.clone(),
+        },
     ]);
     assert_eq!(outcome.kept, 0);
-    assert_eq!(outcome.removed.len(), 2, "both comparisons genuinely disagreed: {outcome:?}");
+    assert_eq!(
+        outcome.removed.len(),
+        2,
+        "both comparisons genuinely disagreed: {outcome:?}"
+    );
     // B matched nothing, so exactly one B path surfaces for originals
     // promotion (deduplicated downstream, but each row must carry it).
-    let promoted: Vec<_> = outcome.removed.iter().map(|p| p.b.to_string_lossy()).collect();
-    assert_eq!(promoted, vec![b1.display().to_string(), b1.display().to_string()]);
+    let promoted: Vec<_> = outcome
+        .removed
+        .iter()
+        .map(|p| p.b.to_string_lossy())
+        .collect();
+    assert_eq!(
+        promoted,
+        vec![b1.display().to_string(), b1.display().to_string()]
+    );
 }
 
 #[test]
@@ -910,10 +990,7 @@ fn deep_scan_keeps_false_positive_rows_for_b_matching_nothing_even_with_confirme
     fs::write(&b1, head_shared_video(b"AAAA-actual-content")).unwrap();
     fs::write(&b2, head_shared_video(b"CCCC-third-content")).unwrap();
 
-    let outcome = deep_scan_pairs(&[
-        DupPair { a: a1, b: b1 },
-        DupPair { a: a2, b: b2 },
-    ]);
+    let outcome = deep_scan_pairs(&[DupPair { a: a1, b: b1 }, DupPair { a: a2, b: b2 }]);
     assert_eq!(outcome.kept, 1, "{outcome:?}");
     assert_eq!(outcome.removed.len(), 1, "{outcome:?}");
     assert_eq!(
@@ -956,14 +1033,20 @@ fn mts_files_are_scanned_compared_and_deep_scanned() {
     // Shallow scan: found as duplicates despite different packet timestamps.
     let cmp = compare_folders(&a, &b).unwrap();
     assert_eq!(cmp.duplicates.len(), 1, "mts must participate in compare");
-    assert!(cmp.unreadable.is_empty(), "mts must decode, not be unreadable");
+    assert!(
+        cmp.unreadable.is_empty(),
+        "mts must decode, not be unreadable"
+    );
 
     let group = &cmp.duplicates[0];
     let outcome = deep_scan_pairs(&[DupPair {
         a: group.a[0].clone(),
         b: group.b[0].clone(),
     }]);
-    assert_eq!(outcome.kept, 1, "timestamp-only differences stay duplicates");
+    assert_eq!(
+        outcome.kept, 1,
+        "timestamp-only differences stay duplicates"
+    );
     assert!(outcome.removed.is_empty());
 }
 
@@ -981,8 +1064,16 @@ fn mislabeled_jpeg_named_mov_still_pairs_with_its_jpg_twin() {
     write(&b, "photo.mov", &jpeg);
 
     let cmp = compare_folders(&a, &b).unwrap();
-    assert_eq!(cmp.duplicates.len(), 1, "mislabeled twin must pair: {cmp:?}");
-    assert!(cmp.unreadable.is_empty(), "must not be unreadable: {:?}", cmp.unreadable);
+    assert_eq!(
+        cmp.duplicates.len(),
+        1,
+        "mislabeled twin must pair: {cmp:?}"
+    );
+    assert!(
+        cmp.unreadable.is_empty(),
+        "must not be unreadable: {:?}",
+        cmp.unreadable
+    );
 }
 
 #[test]
@@ -993,10 +1084,20 @@ fn avi_copies_pair_across_trees_despite_metadata_differences() {
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("a");
     let b = root.path().join("b");
-    let content = (0..40_000u32).map(|i| ((i * 5 + 1) % 253) as u8).collect::<Vec<_>>();
+    let content = (0..40_000u32)
+        .map(|i| ((i * 5 + 1) % 253) as u8)
+        .collect::<Vec<_>>();
 
-    write(&a, "clip.avi", &synthesize_avi(&content, b"2006:07:15 10:49:34"));
-    write(&b, "clip.avi", &synthesize_avi(&content, b"2007:01:01 00:00:00"));
+    write(
+        &a,
+        "clip.avi",
+        &synthesize_avi(&content, b"2006:07:15 10:49:34"),
+    );
+    write(
+        &b,
+        "clip.avi",
+        &synthesize_avi(&content, b"2007:01:01 00:00:00"),
+    );
 
     let cmp = compare_folders(&a, &b).unwrap();
     assert_eq!(cmp.duplicates.len(), 1, "avi must pair: {cmp:?}");
@@ -1008,7 +1109,10 @@ fn avi_copies_pair_across_trees_despite_metadata_differences() {
         a: group.a[0].clone(),
         b: group.b[0].clone(),
     }]);
-    assert_eq!(outcome.kept, 1, "movi-identical avi pair must stay confirmed: {outcome:?}");
+    assert_eq!(
+        outcome.kept, 1,
+        "movi-identical avi pair must stay confirmed: {outcome:?}"
+    );
 }
 
 fn synthesize_avi(movi: &[u8], idit: &[u8]) -> Vec<u8> {
@@ -1022,7 +1126,10 @@ fn synthesize_avi(movi: &[u8], idit: &[u8]) -> Vec<u8> {
         }
         v
     };
-    let hdrl = riff_chunk(b"LIST", &[b"hdrl".as_slice(), &riff_chunk(b"IDIT", idit)].concat());
+    let hdrl = riff_chunk(
+        b"LIST",
+        &[b"hdrl".as_slice(), &riff_chunk(b"IDIT", idit)].concat(),
+    );
     let movi_list = riff_chunk(b"LIST", &[b"movi".as_slice(), movi].concat());
     let body = [hdrl, movi_list].concat();
 
@@ -1036,9 +1143,9 @@ fn synthesize_avi(movi: &[u8], idit: &[u8]) -> Vec<u8> {
 
 #[test]
 fn cached_compare_matches_uncached_and_reuses_hashes() {
-    use std::sync::Mutex;
     use dedupe2::Scanner::cache::ScanCache;
     use dedupe2::Scanner::compare::compare_folders_cached;
+    use std::sync::Mutex;
 
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
@@ -1069,9 +1176,9 @@ fn cached_compare_matches_uncached_and_reuses_hashes() {
 
 #[test]
 fn compare_snapshots_classifies_without_touching_the_filesystem() {
-    use std::time::SystemTime;
     use dedupe2::Scanner::compare::compare_snapshots;
     use dedupe2::Scanner::scan::{ScanStats, ScannedFile, TreeSnapshot};
+    use std::time::SystemTime;
 
     fn snapshot(root: &str, files: &[(&str, u64, bool)]) -> TreeSnapshot {
         let root_path = PathBuf::from(root);

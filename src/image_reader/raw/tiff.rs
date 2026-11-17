@@ -74,6 +74,11 @@ fn tile_bytes(src: &RawSource, ifd: &IFD) -> Option<Vec<u8>> {
 }
 
 fn panasonic_bytes(src: &RawSource, ifd: &IFD) -> Option<Vec<u8>> {
-    let offset = ifd.get_entry(TiffCommonTag::PanaOffsets)?.value.force_usize(0);
-    src.subview_until_eof(offset as u64).ok().map(|s| s.to_vec())
+    let offset = ifd
+        .get_entry(TiffCommonTag::PanaOffsets)?
+        .value
+        .force_usize(0);
+    src.subview_until_eof(offset as u64)
+        .ok()
+        .map(|s| s.to_vec())
 }

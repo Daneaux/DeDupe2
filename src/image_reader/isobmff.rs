@@ -19,7 +19,9 @@ fn read_u32(data: &[u8], pos: usize) -> Option<u32> {
 
 fn read_u64(data: &[u8], pos: usize) -> Option<u64> {
     let b = data.get(pos..pos + 8)?;
-    Some(u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+    Some(u64::from_be_bytes([
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+    ]))
 }
 
 fn read_uint(data: &[u8], pos: usize, size: u8) -> Option<u64> {
@@ -197,7 +199,11 @@ fn parse_dimg_refs(data: &[u8], box_start: usize, primary_id: u32) -> Vec<u32> {
     Vec::new()
 }
 
-fn extract_extent<'a>(data: &'a [u8], ext: &Extent, idat_offset: Option<usize>) -> Option<&'a [u8]> {
+fn extract_extent<'a>(
+    data: &'a [u8],
+    ext: &Extent,
+    idat_offset: Option<usize>,
+) -> Option<&'a [u8]> {
     let base = match ext.construction_method {
         0 => 0,
         1 => idat_offset?,

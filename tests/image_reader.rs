@@ -44,7 +44,6 @@ fn mov_sample_mod_exif() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/mov/test_exif.MOV")
 }
 
-
 fn crw_sample_mod_exif() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_crw-exif.CRW")
 }
@@ -68,7 +67,6 @@ fn rw2_sample() -> PathBuf {
 fn rw2_sample_mod_exif() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/raw-exif-mod/raw_rw2-exif.RW2")
 }
-
 
 #[test]
 fn heic_reads_first_64kb_of_image_data_skipping_headers() {
@@ -117,7 +115,7 @@ fn heic_compare_image_data_and_decoded_pixels() {
 #[test]
 fn heic_exif_data_different_but_image_data_same() {
     let path1 = heic_sample();
-//    let path2 = heic_sample_mod_exif();
+    //    let path2 = heic_sample_mod_exif();
     let path2 = heic_sample_copy();
 
     let limit = ReadLimit::First(64 * 1024);
@@ -258,7 +256,6 @@ fn rw2_exif_data_different_but_image_data_same() {
     assert_ne!(filedata1, filedata2);
 }
 
-
 #[test]
 fn hash_image_data_n_falls_back_to_raw_bytes_for_undecodable_files() {
     use std::fs;
@@ -267,7 +264,8 @@ fn hash_image_data_n_falls_back_to_raw_bytes_for_undecodable_files() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("garbage.cr2");
     let mut f = fs::File::create(&path).unwrap();
-    f.write_all(&[0xFF, 0x44, 0x00, 0x17, 0xAB, 0xCD, 0xEF, 0x01]).unwrap();
+    f.write_all(&[0xFF, 0x44, 0x00, 0x17, 0xAB, 0xCD, 0xEF, 0x01])
+        .unwrap();
     drop(f);
 
     let hash = dedupe2::image_reader::hash_image_data_n(&path, 64 * 1024);
@@ -308,7 +306,9 @@ fn synthesize_movie(payload: &[u8], creation_time: u32) -> Vec<u8> {
 }
 
 fn movie_payload(len: usize) -> Vec<u8> {
-    (0..len).map(|i| ((i as u64 * 7 + 13) % 251) as u8).collect()
+    (0..len)
+        .map(|i| ((i as u64 * 7 + 13) % 251) as u8)
+        .collect()
 }
 
 #[test]
@@ -393,8 +393,7 @@ fn mov_hashes_of_exif_modified_variants_match() {
 
 #[test]
 fn png_image_data_is_decoded_and_metadata_free() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/TestImages/png/IMG_5526.PNG");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/png/IMG_5526.PNG");
     if !path.exists() {
         return; // sample image not present in this checkout
     }
@@ -415,8 +414,7 @@ fn png_image_data_is_decoded_and_metadata_free() {
 #[test]
 fn png_hash_ignores_chunks_after_iend() {
     let dir = tempfile::tempdir().unwrap();
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/TestImages/png/IMG_5526.PNG");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/png/IMG_5526.PNG");
     if !path.exists() {
         return; // sample image not present in this checkout
     }
@@ -504,7 +502,17 @@ fn m2ts_with_different_content_hashes_differ() {
     let a = dir.path().join("a.mts");
     let b = dir.path().join("b.mts");
     fs::write(&a, synthesize_m2ts(&movie_payload(10_000), 0)).unwrap();
-    fs::write(&b, synthesize_m2ts(&movie_payload(10_000).iter().map(|x| x ^ 0xFF).collect::<Vec<_>>(), 0)).unwrap();
+    fs::write(
+        &b,
+        synthesize_m2ts(
+            &movie_payload(10_000)
+                .iter()
+                .map(|x| x ^ 0xFF)
+                .collect::<Vec<_>>(),
+            0,
+        ),
+    )
+    .unwrap();
 
     assert_ne!(
         dedupe2::image_reader::hash_image_data_all(&a).unwrap(),
@@ -527,9 +535,15 @@ fn m2ts_payload_skips_packet_headers() {
 
 #[test]
 fn mts_is_a_supported_video_extension() {
-    assert!(dedupe2::image_reader::is_supported_image(Path::new("clip.mts")));
-    assert!(dedupe2::image_reader::is_supported_image(Path::new("clip.MTS")));
-    assert!(dedupe2::image_reader::is_supported_image(Path::new("clip.m2ts")));
+    assert!(dedupe2::image_reader::is_supported_image(Path::new(
+        "clip.mts"
+    )));
+    assert!(dedupe2::image_reader::is_supported_image(Path::new(
+        "clip.MTS"
+    )));
+    assert!(dedupe2::image_reader::is_supported_image(Path::new(
+        "clip.m2ts"
+    )));
     assert!(dedupe2::image_reader::is_video(Path::new("clip.mts")));
     assert!(!dedupe2::image_reader::is_video(Path::new("clip.jpg")));
 }
@@ -563,10 +577,9 @@ fn jpeg_content_named_mov_is_rescued_by_content_sniffing() {
 #[test]
 fn png_content_named_jpg_is_rescued_by_content_sniffing() {
     let dir = tempfile::tempdir().unwrap();
-    let png = fs::read(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/png/IMG_5526.PNG"),
-    )
-    .unwrap();
+    let png =
+        fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/TestImages/png/IMG_5526.PNG"))
+            .unwrap();
 
     let as_png = dir.path().join("image.png");
     let as_jpg = dir.path().join("image.jpg");
@@ -586,12 +599,18 @@ fn m2ts_content_named_mov_is_rescued_by_content_sniffing() {
     fs::write(&path, synthesize_m2ts(&movie_payload(20_000), 0)).unwrap();
 
     let (_, decoded) = dedupe2::image_reader::hash_image_data_status(&path, 64 * 1024);
-    assert!(decoded, "transport stream content is recognized regardless of name");
+    assert!(
+        decoded,
+        "transport stream content is recognized regardless of name"
+    );
 
     let full = dedupe2::image_reader::hash_image_data_all(&path).unwrap();
     let twin = dir.path().join("clip.mts");
     fs::write(&twin, synthesize_m2ts(&movie_payload(20_000), 0)).unwrap();
-    assert_eq!(full, dedupe2::image_reader::hash_image_data_all(&twin).unwrap());
+    assert_eq!(
+        full,
+        dedupe2::image_reader::hash_image_data_all(&twin).unwrap()
+    );
 }
 
 #[test]
@@ -619,7 +638,10 @@ fn riff_chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
 /// Minimal AVI: RIFF header + LIST hdrl (with IDIT metadata) + LIST movi
 /// (content) + idx1 index.
 fn synthesize_avi(movi: &[u8], idit: &[u8]) -> Vec<u8> {
-    let hdrl = riff_chunk(b"LIST", &[b"hdrl".as_slice(), &riff_chunk(b"IDIT", idit)].concat());
+    let hdrl = riff_chunk(
+        b"LIST",
+        &[b"hdrl".as_slice(), &riff_chunk(b"IDIT", idit)].concat(),
+    );
     let movi_list = riff_chunk(b"LIST", &[b"movi".as_slice(), movi].concat());
     let idx1 = riff_chunk(b"idx1", &[0u8; 16]);
     let body = [hdrl, movi_list, idx1].concat();
@@ -663,7 +685,10 @@ fn avi_with_different_content_hashes_differ() {
     fs::write(
         &b,
         synthesize_avi(
-            &movie_payload(10_000).iter().map(|x| x ^ 0xFF).collect::<Vec<_>>(),
+            &movie_payload(10_000)
+                .iter()
+                .map(|x| x ^ 0xFF)
+                .collect::<Vec<_>>(),
             b"same",
         ),
     )
@@ -688,8 +713,12 @@ fn avi_payload_read_returns_movi_content() {
 
 #[test]
 fn avi_extension_is_supported_and_content_sniffed() {
-    assert!(dedupe2::image_reader::is_supported_image(Path::new("clip.avi")));
-    assert!(dedupe2::image_reader::is_supported_image(Path::new("clip.AVI")));
+    assert!(dedupe2::image_reader::is_supported_image(Path::new(
+        "clip.avi"
+    )));
+    assert!(dedupe2::image_reader::is_supported_image(Path::new(
+        "clip.AVI"
+    )));
     assert!(dedupe2::image_reader::is_video(Path::new("clip.avi")));
 
     // Mislabeled: AVI content under a .mov name must also decode.

@@ -90,7 +90,12 @@ pub fn hash_mdat(path: &Path) -> Result<u64, ImageReaderError> {
             1 => {
                 f.read_exact(&mut hdr[8..16])
                     .map_err(|e| ImageReaderError::new(e.to_string()))?;
-                (16, u64::from_be_bytes([hdr[8], hdr[9], hdr[10], hdr[11], hdr[12], hdr[13], hdr[14], hdr[15]]))
+                (
+                    16,
+                    u64::from_be_bytes([
+                        hdr[8], hdr[9], hdr[10], hdr[11], hdr[12], hdr[13], hdr[14], hdr[15],
+                    ]),
+                )
             }
             n => (8, n as u64),
         };
@@ -126,9 +131,7 @@ pub fn hash_mdat(path: &Path) -> Result<u64, ImageReaderError> {
     }
 
     if payload_total == 0 {
-        Err(ImageReaderError::new(
-            "could not locate movie data (mdat)",
-        ))
+        Err(ImageReaderError::new("could not locate movie data (mdat)"))
     } else {
         Ok(hasher.finish())
     }
@@ -217,7 +220,9 @@ fn riff_image_data(path: &Path, limit: ReadLimit) -> Result<Vec<u8>, ImageReader
     })?;
     out.truncate(cap);
     if out.is_empty() {
-        return Err(ImageReaderError::new("could not locate avi movie data (movi)"));
+        return Err(ImageReaderError::new(
+            "could not locate avi movie data (movi)",
+        ));
     }
     Ok(out)
 }
@@ -234,7 +239,9 @@ fn hash_riff_movi(path: &Path) -> Result<u64, ImageReaderError> {
         true
     })?;
     if bytes == 0 {
-        return Err(ImageReaderError::new("could not locate avi movie data (movi)"));
+        return Err(ImageReaderError::new(
+            "could not locate avi movie data (movi)",
+        ));
     }
     Ok(hasher.finish())
 }
@@ -270,11 +277,16 @@ fn walk_riff_movi(
             .map_err(|e| ImageReaderError::new(e.to_string()))?;
         f.read_exact(&mut chunk_hdr)
             .map_err(|e| ImageReaderError::new(e.to_string()))?;
-        let size = u32::from_le_bytes([chunk_hdr[4], chunk_hdr[5], chunk_hdr[6], chunk_hdr[7]]) as u64;
+        let size =
+            u32::from_le_bytes([chunk_hdr[4], chunk_hdr[5], chunk_hdr[6], chunk_hdr[7]]) as u64;
         let data_start = pos + 8;
         let data_end = match data_start.checked_add(size) {
             Some(end) if end <= file_len => end,
-            _ => return Err(ImageReaderError::new(format!("malformed avi chunk at offset {pos}"))),
+            _ => {
+                return Err(ImageReaderError::new(format!(
+                    "malformed avi chunk at offset {pos}"
+                )))
+            }
         };
 
         if &chunk_hdr[..4] == b"LIST" && size >= 4 {
@@ -339,7 +351,9 @@ fn ts_image_data(path: &Path, limit: ReadLimit) -> Result<Vec<u8>, ImageReaderEr
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = f.read(&mut buf).map_err(|e| ImageReaderError::new(e.to_string()))?;
+        let n = f
+            .read(&mut buf)
+            .map_err(|e| ImageReaderError::new(e.to_string()))?;
         if n == 0 {
             break;
         }
@@ -388,7 +402,9 @@ fn hash_ts_payload(path: &Path) -> Result<u64, ImageReaderError> {
         // Raw 188-byte transport stream: hash every byte.
         let mut buf = [0u8; 64 * 1024];
         loop {
-            let n = f.read(&mut buf).map_err(|e| ImageReaderError::new(e.to_string()))?;
+            let n = f
+                .read(&mut buf)
+                .map_err(|e| ImageReaderError::new(e.to_string()))?;
             if n == 0 {
                 break;
             }
@@ -400,7 +416,9 @@ fn hash_ts_payload(path: &Path) -> Result<u64, ImageReaderError> {
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = f.read(&mut buf).map_err(|e| ImageReaderError::new(e.to_string()))?;
+        let n = f
+            .read(&mut buf)
+            .map_err(|e| ImageReaderError::new(e.to_string()))?;
         if n == 0 {
             break;
         }

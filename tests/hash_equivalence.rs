@@ -21,7 +21,19 @@ fn check(len: usize) {
 
 #[test]
 fn streaming_hash_matches_one_shot_hash() {
-    for len in [0, 1, 7, 8, 9, 15, 65535, 65536, 65537, 1 << 18, (1 << 20) + 3] {
+    for len in [
+        0,
+        1,
+        7,
+        8,
+        9,
+        15,
+        65535,
+        65536,
+        65537,
+        1 << 18,
+        (1 << 20) + 3,
+    ] {
         check(len);
     }
 }

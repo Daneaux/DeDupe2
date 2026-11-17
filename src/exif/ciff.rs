@@ -32,7 +32,9 @@ pub fn creation_date(path: &Path) -> Option<CreationDate> {
     }
     let heap = usize::try_from(u32_at(&data, 2)?).ok()?;
     let ts = find_date(&data, heap, data.len(), 0)?;
-    let dt = chrono::Utc.timestamp_opt(i64::from(u32::from_le_bytes(ts)), 0).single()?;
+    let dt = chrono::Utc
+        .timestamp_opt(i64::from(u32::from_le_bytes(ts)), 0)
+        .single()?;
     Some(CreationDate::DateCreated(
         dt.format("%Y-%m-%d %H:%M:%S").to_string(),
     ))
