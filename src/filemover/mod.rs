@@ -16,6 +16,7 @@ mod error;
 mod library;
 mod naming;
 mod organize;
+mod outcome;
 mod purgatory;
 mod rehome;
 mod safe_fs;
@@ -37,10 +38,9 @@ pub use library::{
     preview_merge_with_progress, DuplicateGroup, MergeOutcome, MergePlan, MovePlan,
 };
 pub use organize::{organize_by_date, organize_into_destination_with_progress, OrganizeOutcome};
-pub use purgatory::{
-    move_to_purgatory_with_progress, purge_proven_duplicates_with_progress, PurgatoryOutcome,
-};
-pub use rehome::{plan_rehome, rehome_verified, RehomeOutcome, RehomePlan};
+pub use outcome::{BatchOutcome, PurgatoryOutcome, RehomeOutcome, TransferOutcome};
+pub use purgatory::{move_to_purgatory_with_progress, purge_proven_duplicates_with_progress};
+pub use rehome::{plan_rehome, rehome_verified, RehomePlan};
 pub use safe_fs::TransferError;
 pub use similar::{
     apply_similar_decisions_with_progress, swap_better_copies_with_progress, DecisionOutcome,
@@ -48,7 +48,7 @@ pub use similar::{
 };
 pub use transfer::{
     copy_originals, copy_originals_with_progress, transfer_dated_with_progress,
-    transfer_files_with_progress, transfer_originals_with_progress, CopyOutcome, TransferOutcome,
+    transfer_files_with_progress, transfer_originals_with_progress, CopyOutcome,
 };
 
 /// Whether a transfer keeps the source (`Copy`) or removes it once the
@@ -69,6 +69,4 @@ pub enum DuplicateStrategy {
     ImageData,
 }
 
-/// Progress callback shared by every long-running operation:
-/// `progress(done, total)`.
-pub type Progress<'a> = &'a (dyn Fn(usize, usize) + Send + Sync);
+pub use crate::Progress;

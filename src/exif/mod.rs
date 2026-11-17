@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::time::SystemTime;
 
+use crate::Progress;
 use nom_exif::{read_metadata, ExifTag, Metadata, TrackInfoTag};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -415,10 +416,7 @@ fn xmp_timestamp(value: &str) -> Option<CreationDate> {
 /// whatever the readers could not date, and the folder-name proxy last.
 /// Exactly one exiftool process is spawned no matter how many files fail
 /// the in-process readers.
-pub fn creation_dates_batch(
-    paths: &[PathBuf],
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
-) -> Vec<CreationDate> {
+pub fn creation_dates_batch(paths: &[PathBuf], progress: Progress) -> Vec<CreationDate> {
     use rayon::prelude::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

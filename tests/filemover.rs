@@ -401,7 +401,7 @@ fn table_transfer_copies_verifies_and_moves_flat() {
     let outcome =
         transfer_files_with_progress(&[a.clone(), b.clone()], &dest, Operation::Copy, &|_, _| {});
     assert_eq!(outcome.planned, 2);
-    assert_eq!(outcome.transferred, 2, "{outcome:?}");
+    assert_eq!(outcome.moved, 2, "{outcome:?}");
     assert_eq!(outcome.renamed_on_collision, 2);
     assert!(outcome.failures.is_empty(), "{outcome:?}");
     assert_eq!(
@@ -421,7 +421,7 @@ fn table_transfer_copies_verifies_and_moves_flat() {
     // Move: verified then removed.
     let dest2 = root.path().join("export2");
     let outcome = transfer_files_with_progress(&[a.clone()], &dest2, Operation::Move, &|_, _| {});
-    assert_eq!(outcome.transferred, 1, "{outcome:?}");
+    assert_eq!(outcome.moved, 1, "{outcome:?}");
     assert!(!a.exists(), "move removes the source after verification");
     assert_eq!(
         std::fs::read(dest2.join("photo.jpg")).unwrap(),
@@ -435,7 +435,7 @@ fn table_transfer_copies_verifies_and_moves_flat() {
         Operation::Copy,
         &|_, _| {},
     );
-    assert_eq!(outcome.transferred, 1);
+    assert_eq!(outcome.moved, 1);
     assert_eq!(outcome.failures.len(), 1);
     assert!(b.exists());
 }

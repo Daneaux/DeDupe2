@@ -462,7 +462,7 @@ async fn compare_transfer(
                 Operation::Copy => "copied",
             },
             planned: outcome.planned,
-            transferred: outcome.transferred,
+            transferred: outcome.moved,
             renamed_on_collision: outcome.renamed_on_collision,
             failure_count: outcome.failures.len(),
             failures: outcome

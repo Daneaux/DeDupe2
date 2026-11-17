@@ -20,6 +20,7 @@ use crate::image_reader::{
     collect_image_files, distance, lossy_kind, Phash, DHASH_SIMILAR_MAX_DISTANCE,
     SIMILAR_MAX_DISTANCE,
 };
+use crate::Progress;
 use crate::Scanner::cache::{
     full_content_cached, perceptual_cached, shallow_hashes_cached, ScanCache,
 };
@@ -74,7 +75,7 @@ pub struct SimilarOutcome {
 pub fn find_similar_with_progress(
     root: &Path,
     cache: &Mutex<ScanCache>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<SimilarOutcome, Box<dyn std::error::Error>> {
     let files = collect_image_files(root)?;
     let scanned = files.len();
@@ -359,7 +360,7 @@ fn chroma_compatible(a: Option<u8>, b: Option<u8>) -> bool {
 fn collect_lossy(
     root: &Path,
     cache: &Mutex<ScanCache>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<(usize, Vec<LossyEntry>), Box<dyn std::error::Error>> {
     let files = collect_image_files(root)?;
     let scanned = files.len();
@@ -397,7 +398,7 @@ pub fn find_similar_between_with_progress(
     a_root: &Path,
     b_root: &Path,
     cache: &Mutex<ScanCache>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<SimilarCompareOutcome, Box<dyn std::error::Error>> {
     let (scanned_a, a_entries) = collect_lossy(a_root, cache, progress)?;
     let (scanned_b, b_entries) = collect_lossy(b_root, cache, progress)?;

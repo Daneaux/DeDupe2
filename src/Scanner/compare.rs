@@ -44,7 +44,7 @@ pub fn compare_folders(a: &Path, b: &Path) -> Result<Comparison, Box<dyn std::er
 pub fn compare_folders_with_progress(
     a: &Path,
     b: &Path,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<Comparison, Box<dyn std::error::Error>> {
     compare_folders_inner(a, b, None, progress)
 }
@@ -55,7 +55,7 @@ pub fn compare_folders_cached(
     a: &Path,
     b: &Path,
     cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<Comparison, Box<dyn std::error::Error>> {
     compare_folders_inner(a, b, Some(cache), progress)
 }
@@ -64,7 +64,7 @@ fn compare_folders_inner(
     a: &Path,
     b: &Path,
     cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<Comparison, Box<dyn std::error::Error>> {
     let trees = scan_trees(
         &[a.to_path_buf(), b.to_path_buf()],
@@ -147,10 +147,7 @@ pub fn scan_exif(paths: &[PathBuf]) -> Vec<DatedOriginal> {
     scan_exif_with_progress(paths, &|_, _| {})
 }
 
-pub fn scan_exif_with_progress(
-    paths: &[PathBuf],
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
-) -> Vec<DatedOriginal> {
+pub fn scan_exif_with_progress(paths: &[PathBuf], progress: Progress) -> Vec<DatedOriginal> {
     // Dates are resolved in one pass: in-process readers per file, a single
     // batched exiftool subprocess for the undatable remainder, then folder
     // proxies (see creation_dates_batch).
@@ -165,6 +162,7 @@ pub fn scan_exif_with_progress(
         .collect()
 }
 
+use crate::Progress;
 use std::collections::HashSet;
 
 /// Per-candidate-tree counts against the destination set A and the other
@@ -213,7 +211,7 @@ pub fn compare_sets(
 pub fn compare_sets_with_progress(
     a: &Path,
     candidates: &[PathBuf],
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<SetComparison, Box<dyn std::error::Error>> {
     compare_sets_inner(a, candidates, None, progress)
 }
@@ -224,7 +222,7 @@ pub fn compare_sets_cached(
     a: &Path,
     candidates: &[PathBuf],
     cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<SetComparison, Box<dyn std::error::Error>> {
     compare_sets_inner(a, candidates, Some(cache), progress)
 }
@@ -233,7 +231,7 @@ fn compare_sets_inner(
     a: &Path,
     candidates: &[PathBuf],
     cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<SetComparison, Box<dyn std::error::Error>> {
     let mut roots = Vec::with_capacity(candidates.len() + 1);
     roots.push(a.to_path_buf());
@@ -375,7 +373,7 @@ pub fn deep_scan_pairs(pairs: &[DupPair]) -> DeepScanOutcome {
 pub fn deep_scan_pairs_cached(
     pairs: &[DupPair],
     cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> DeepScanOutcome {
     deep_scan_pairs_inner(pairs, Some(cache), progress)
 }
@@ -385,17 +383,14 @@ pub fn deep_scan_pairs_cached(
 /// `mdat` payload for movies), and finally fully decoded pixels for stills.
 /// Only a proven match counts: a pair that cannot be fully read or decoded
 /// (or whose check panics) is reported as removed, never as a duplicate.
-pub fn deep_scan_pairs_with_progress(
-    pairs: &[DupPair],
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
-) -> DeepScanOutcome {
+pub fn deep_scan_pairs_with_progress(pairs: &[DupPair], progress: Progress) -> DeepScanOutcome {
     deep_scan_pairs_inner(pairs, None, progress)
 }
 
 fn deep_scan_pairs_inner(
     pairs: &[DupPair],
     cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> DeepScanOutcome {
     let total = pairs.len();
     let done = AtomicUsize::new(0);
@@ -719,7 +714,7 @@ pub fn verify_tree_dates(root: &Path) -> Result<VerifyOutcome, Box<dyn std::erro
 /// capture date implies. Catches files moved by stale/wrong dates.
 pub fn verify_tree_dates_with_progress(
     root: &Path,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<VerifyOutcome, Box<dyn std::error::Error>> {
     verify_tree_dates_inner(root, None, progress)
 }
@@ -728,7 +723,7 @@ pub fn verify_tree_dates_with_progress(
 pub fn verify_tree_dates_cached(
     root: &Path,
     cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<VerifyOutcome, Box<dyn std::error::Error>> {
     verify_tree_dates_inner(root, Some(cache), progress)
 }
@@ -736,7 +731,7 @@ pub fn verify_tree_dates_cached(
 fn verify_tree_dates_inner(
     root: &Path,
     cache: Option<&std::sync::Mutex<crate::Scanner::cache::ScanCache>>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<VerifyOutcome, Box<dyn std::error::Error>> {
     use crate::exif::creation_dates_batch;
 

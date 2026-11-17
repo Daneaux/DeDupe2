@@ -53,7 +53,7 @@ fn transfer_keeps_source_when_destination_is_unwritable() {
 
     set_mode(&destination, 0o755);
 
-    assert_eq!(outcome.transferred, 0, "{outcome:?}");
+    assert_eq!(outcome.moved, 0, "{outcome:?}");
     assert_eq!(outcome.failures.len(), 1, "{outcome:?}");
     assert!(source.exists(), "source must survive a failed move");
     assert!(!destination.join("photo.jpg").exists());
@@ -79,7 +79,7 @@ fn transfer_reports_unreadable_source_and_keeps_it_in_place() {
 
     set_mode(&source, 0o644);
 
-    assert_eq!(outcome.transferred, 0, "{outcome:?}");
+    assert_eq!(outcome.moved, 0, "{outcome:?}");
     assert_eq!(outcome.failures.len(), 1, "{outcome:?}");
     assert!(source.exists(), "unreadable source is left in place");
     assert!(!destination.exists() || !destination.join("unreadable.jpg").exists());
@@ -101,7 +101,7 @@ fn transfer_mixed_batch_reports_missing_files_and_moves_the_rest() {
     );
 
     assert_eq!(outcome.planned, 2);
-    assert_eq!(outcome.transferred, 1, "{outcome:?}");
+    assert_eq!(outcome.moved, 1, "{outcome:?}");
     assert_eq!(outcome.failures.len(), 1, "{outcome:?}");
     assert_eq!(outcome.failures[0].0, missing);
     assert!(!source.exists(), "valid file was moved");
@@ -226,7 +226,7 @@ fn transfer_collision_renames_instead_of_overwriting() {
     let outcome =
         transfer_files_with_progress(&[source.clone()], &destination, Operation::Copy, &|_, _| {});
 
-    assert_eq!(outcome.transferred, 1, "{outcome:?}");
+    assert_eq!(outcome.moved, 1, "{outcome:?}");
     assert_eq!(outcome.renamed_on_collision, 1);
     assert_eq!(
         std::fs::read(destination.join("photo.jpg")).unwrap(),

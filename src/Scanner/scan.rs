@@ -13,6 +13,7 @@ use std::time::SystemTime;
 use rayon::prelude::*;
 
 use crate::image_reader::{collect_image_files, hash_image_data_status, ImageReaderError};
+use crate::Progress;
 use crate::Scanner::cache::ScanCache;
 
 /// Hash result per file: `decoded` is `true` when the hash came from the
@@ -29,7 +30,7 @@ pub struct FileHash {
 pub fn hash_image_data_parallel(
     paths: &[PathBuf],
     prefix_bytes: usize,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Vec<FileHash> {
     let total = paths.len();
     let done = AtomicUsize::new(0);
@@ -89,7 +90,7 @@ pub fn scan_tree(
     root: &Path,
     prefix_bytes: usize,
     cache: Option<&Mutex<ScanCache>>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<TreeSnapshot, ImageReaderError> {
     let mut trees = scan_trees(&[root.to_path_buf()], prefix_bytes, cache, progress)?;
     Ok(trees.remove(0))
@@ -101,7 +102,7 @@ pub fn scan_trees(
     roots: &[PathBuf],
     prefix_bytes: usize,
     cache: Option<&Mutex<ScanCache>>,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Result<Vec<TreeSnapshot>, ImageReaderError> {
     let mut entries: Vec<(usize, PathBuf)> = Vec::new();
     for (index, root) in roots.iter().enumerate() {

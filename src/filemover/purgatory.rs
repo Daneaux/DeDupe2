@@ -1,19 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use super::naming::NameRegistry;
+use super::outcome::BatchOutcome;
 use super::safe_fs::{prune_empty_children, transfer_into};
 use super::{Operation, Progress};
 use crate::Scanner::compare::{content_match, ContentMatch};
-
-#[derive(Debug)]
-pub struct PurgatoryOutcome {
-    pub planned: usize,
-    pub moved: usize,
-    pub renamed_on_collision: usize,
-    /// Files that could not be moved safely, with the reason. The source is
-    /// always left intact for these.
-    pub failures: Vec<(PathBuf, String)>,
-}
 
 /// Move the given files out of a tree into a side "purgatory" tree, keeping
 /// each file's path relative to `source_root` under `purgatory_root`. Every
@@ -30,8 +21,8 @@ pub fn move_to_purgatory_with_progress(
     source_root: &Path,
     purgatory_root: &Path,
     progress: Progress,
-) -> PurgatoryOutcome {
-    let mut outcome = PurgatoryOutcome::planned(files.len());
+) -> BatchOutcome {
+    let mut outcome = BatchOutcome::planned(files.len());
     let mut names = NameRegistry::new();
 
     for (i, path) in files.iter().enumerate() {
@@ -55,8 +46,8 @@ pub fn purge_proven_duplicates_with_progress(
     source_root: &Path,
     purgatory_root: &Path,
     progress: Progress,
-) -> PurgatoryOutcome {
-    let mut outcome = PurgatoryOutcome::planned(pairs.len());
+) -> BatchOutcome {
+    let mut outcome = BatchOutcome::planned(pairs.len());
     let mut names = NameRegistry::new();
 
     for (i, (keeper, duplicate)) in pairs.iter().enumerate() {
@@ -69,25 +60,12 @@ pub fn purge_proven_duplicates_with_progress(
                 &mut names,
                 &mut outcome,
             ),
-            Err(reason) => outcome
-                .failures
-                .push((duplicate.clone(), format!("kept in place: {reason}"))),
+            Err(reason) => outcome.fail(duplicate, format!("kept in place: {reason}")),
         }
     }
 
     prune_empty_children(source_root);
     outcome
-}
-
-impl PurgatoryOutcome {
-    fn planned(planned: usize) -> Self {
-        Self {
-            planned,
-            moved: 0,
-            renamed_on_collision: 0,
-            failures: Vec::new(),
-        }
-    }
 }
 
 /// `Ok` only when `duplicate` is a distinct file whose full content equals
@@ -143,29 +121,18 @@ fn move_one(
     source_root: &Path,
     purgatory_root: &Path,
     names: &mut NameRegistry,
-    outcome: &mut PurgatoryOutcome,
+    outcome: &mut BatchOutcome,
 ) {
     let Ok(rel) = path.strip_prefix(source_root) else {
-        outcome.failures.push((
-            path.to_path_buf(),
-            "file is not inside the candidate tree".into(),
-        ));
+        outcome.fail(path, "file is not inside the candidate tree");
         return;
     };
     let Some(dir) = purgatory_root.join(rel).parent().map(Path::to_path_buf) else {
-        outcome
-            .failures
-            .push((path.to_path_buf(), "target has no parent directory".into()));
+        outcome.fail(path, "target has no parent directory");
         return;
     };
 
-    match transfer_into(path, &dir, names, Operation::Move) {
-        Ok(placed) => {
-            outcome.moved += 1;
-            outcome.renamed_on_collision += usize::from(placed.renamed);
-        }
-        Err(failed) => outcome.failures.push(failed.into_row()),
-    }
+    outcome.record(transfer_into(path, &dir, names, Operation::Move));
 }
 
 #[cfg(test)]
@@ -198,7 +165,7 @@ mod tests {
         }
     }
 
-    fn purge(t: &Trees, pairs: &[(PathBuf, PathBuf)]) -> PurgatoryOutcome {
+    fn purge(t: &Trees, pairs: &[(PathBuf, PathBuf)]) -> BatchOutcome {
         purge_proven_duplicates_with_progress(pairs, &t.b, &t.purgatory, &no_progress)
     }
 

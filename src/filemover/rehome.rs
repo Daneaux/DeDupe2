@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use super::dates::destination_for;
 use super::naming::NameRegistry;
+use super::outcome::BatchOutcome;
 use super::safe_fs::transfer_into;
 use super::{Operation, Progress};
 use crate::exif::CreationDate;
@@ -32,27 +33,12 @@ pub fn plan_rehome(mismatches: &[(PathBuf, String)], root: &Path, format: &str) 
         .collect()
 }
 
-#[derive(Debug)]
-pub struct RehomeOutcome {
-    pub planned: usize,
-    pub moved: usize,
-    pub renamed_on_collision: usize,
-    /// Files that could not be transferred safely, with the reason. The
-    /// source is always left intact for these.
-    pub failures: Vec<(PathBuf, String)>,
-}
-
 /// Super-safe re-home: for every plan, **copy** the file to its target,
 /// verify the destination is byte-identical to the source, and only then
 /// remove the source. Any failure leaves the source untouched. Identical
 /// names at the destination are auto-renamed, never overwritten.
-pub fn rehome_verified(plans: &[RehomePlan], progress: Progress) -> RehomeOutcome {
-    let mut outcome = RehomeOutcome {
-        planned: plans.len(),
-        moved: 0,
-        renamed_on_collision: 0,
-        failures: Vec::new(),
-    };
+pub fn rehome_verified(plans: &[RehomePlan], progress: Progress) -> BatchOutcome {
+    let mut outcome = BatchOutcome::planned(plans.len());
     let mut names = NameRegistry::new();
 
     for (i, plan) in plans.iter().enumerate() {
@@ -64,19 +50,11 @@ pub fn rehome_verified(plans: &[RehomePlan], progress: Progress) -> RehomeOutcom
             continue;
         }
         let Some(dir) = plan.target.parent() else {
-            outcome
-                .failures
-                .push((plan.path.clone(), "target has no parent directory".into()));
+            outcome.fail(&plan.path, "target has no parent directory");
             continue;
         };
 
-        match transfer_into(&plan.path, dir, &mut names, Operation::Move) {
-            Ok(placed) => {
-                outcome.moved += 1;
-                outcome.renamed_on_collision += usize::from(placed.renamed);
-            }
-            Err(failed) => outcome.failures.push(failed.into_row()),
-        }
+        outcome.record(transfer_into(&plan.path, dir, &mut names, Operation::Move));
     }
 
     outcome

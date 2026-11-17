@@ -236,13 +236,15 @@ async fn compare_deep(
 
         let html = render_deep_scan(
             &outcome,
-            &originals_input,
-            &destination,
-            &format,
-            valid_count,
-            &b_root,
-            cache_reused,
-            cache_computed,
+            &DeepScanContext {
+                originals_input: &originals_input,
+                destination: &destination,
+                format: &format,
+                valid_count,
+                b_root: &b_root,
+                cache_reused,
+                cache_computed,
+            },
         );
         let _ = done_tx.send(Msg::Done(html));
     });
@@ -250,15 +252,21 @@ async fn compare_deep(
     Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
 }
 
-fn render_deep_scan(
-    outcome: &crate::Scanner::compare::DeepScanOutcome,
-    originals_input: &str,
-    destination: &str,
-    format: &str,
+/// Everything the deep-scan page shows besides the scan outcome itself.
+struct DeepScanContext<'a> {
+    /// Originals carried over from the compare page (one path per line).
+    originals_input: &'a str,
+    destination: &'a str,
+    format: &'a str,
     valid_count: usize,
-    b_root: &str,
+    b_root: &'a str,
     cache_reused: usize,
     cache_computed: usize,
+}
+
+fn render_deep_scan(
+    outcome: &crate::Scanner::compare::DeepScanOutcome,
+    ctx: &DeepScanContext,
 ) -> String {
     let removed: Vec<DeepPairView> = outcome
         .removed
@@ -278,19 +286,19 @@ fn render_deep_scan(
         .join("\n");
 
     let tpl = DeepScanTemplate {
-        cache_reused,
-        cache_computed,
+        cache_reused: ctx.cache_reused,
+        cache_computed: ctx.cache_computed,
         checked: outcome.checked,
         kept: outcome.kept,
         covered: outcome.covered,
         removed_count: outcome.removed.len(),
         removed,
-        originals_input: originals_input.to_string(),
-        destination: destination.to_string(),
-        format: format.to_string(),
-        valid_count,
+        originals_input: ctx.originals_input.to_string(),
+        destination: ctx.destination.to_string(),
+        format: ctx.format.to_string(),
+        valid_count: ctx.valid_count,
         confirmed_pairs_input,
-        b_root: b_root.to_string(),
+        b_root: ctx.b_root.to_string(),
     };
     tpl.render()
         .unwrap_or_else(|e| format!("render error: {e}"))

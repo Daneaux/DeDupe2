@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use super::dates::destination_for;
 use super::naming::{file_name, NameRegistry};
+use super::outcome::BatchOutcome;
 use super::safe_fs::{relocate_file, transfer_into};
 use super::{FileMoverError, Operation, Progress};
 use crate::exif::{creation_date, CreationDate};
@@ -84,16 +85,6 @@ pub fn transfer_dated_with_progress(
     Ok(outcome)
 }
 
-#[derive(Debug)]
-pub struct TransferOutcome {
-    pub planned: usize,
-    pub transferred: usize,
-    pub renamed_on_collision: usize,
-    /// Files that could not be transferred safely, with the reason. The
-    /// source is always left intact for these.
-    pub failures: Vec<(PathBuf, String)>,
-}
-
 /// Copy or move a set of files into a single destination folder (flat, no
 /// structure preserved). Copy is verified byte-for-byte before reporting
 /// success; Move is copy -> verify -> remove, so a failure never loses a
@@ -103,25 +94,14 @@ pub fn transfer_files_with_progress(
     destination: &Path,
     op: Operation,
     progress: Progress,
-) -> TransferOutcome {
-    let mut outcome = TransferOutcome {
-        planned: files.len(),
-        transferred: 0,
-        renamed_on_collision: 0,
-        failures: Vec::new(),
-    };
+) -> BatchOutcome {
+    let mut outcome = BatchOutcome::planned(files.len());
     let mut names = NameRegistry::new();
     let total = files.len();
 
     for (i, path) in files.iter().enumerate() {
         progress(i + 1, total);
-        match transfer_into(path, destination, &mut names, op) {
-            Ok(placed) => {
-                outcome.transferred += 1;
-                outcome.renamed_on_collision += usize::from(placed.renamed);
-            }
-            Err(failed) => outcome.failures.push(failed.into_row()),
-        }
+        outcome.record(transfer_into(path, destination, &mut names, op));
     }
 
     outcome

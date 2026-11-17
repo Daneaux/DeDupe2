@@ -12,6 +12,7 @@ use crate::exif::CreationDate;
 use crate::image_reader::{self, ImageData, ImageReaderError, Phash, PixelData};
 
 use super::*;
+use crate::Progress;
 
 impl ScanCache {
     /// 64kb encoded-image-data hash (with decoded flag), cached.
@@ -264,7 +265,7 @@ pub fn shallow_hashes_cached(
     cache: &Mutex<ScanCache>,
     paths: &[PathBuf],
     n: usize,
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Vec<(u64, bool)> {
     let total = paths.len();
     let done = AtomicUsize::new(0);
@@ -398,7 +399,7 @@ pub fn pixel_cached(cache: &Mutex<ScanCache>, path: &Path) -> Option<PixelKey> {
 pub fn creation_dates_cached(
     cache: &Mutex<ScanCache>,
     paths: &[PathBuf],
-    progress: &(dyn Fn(usize, usize) + Send + Sync),
+    progress: Progress,
 ) -> Vec<CreationDate> {
     let total = paths.len();
     let mut out: Vec<Option<CreationDate>> = Vec::with_capacity(total);
