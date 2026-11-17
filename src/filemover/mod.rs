@@ -11,6 +11,7 @@
 mod consolidate;
 mod dates;
 mod dedupe;
+mod duplicates;
 mod error;
 mod library;
 mod naming;
@@ -19,6 +20,8 @@ mod purgatory;
 mod rehome;
 mod safe_fs;
 mod similar;
+#[cfg(test)]
+mod test_support;
 mod transfer;
 
 pub use consolidate::{
@@ -34,7 +37,9 @@ pub use library::{
     preview_merge_with_progress, DuplicateGroup, MergeOutcome, MergePlan, MovePlan,
 };
 pub use organize::{organize_by_date, organize_into_destination_with_progress, OrganizeOutcome};
-pub use purgatory::{move_to_purgatory_with_progress, PurgatoryOutcome};
+pub use purgatory::{
+    move_to_purgatory_with_progress, purge_proven_duplicates_with_progress, PurgatoryOutcome,
+};
 pub use rehome::{plan_rehome, rehome_verified, RehomeOutcome, RehomePlan};
 pub use safe_fs::TransferError;
 pub use similar::{

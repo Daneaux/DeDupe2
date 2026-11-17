@@ -310,7 +310,7 @@ fn render_similar_compare(
         duplicates_input: outcome
             .exact_duplicates
             .iter()
-            .map(|d| to_string(&d.path))
+            .map(|d| format!("{}\t{}", to_string(&d.keeper), to_string(&d.path)))
             .collect::<Vec<_>>()
             .join("\n"),
         candidates_input: outcome
@@ -377,7 +377,7 @@ fn render_similar(
         duplicates_input: outcome
             .exact_duplicates
             .iter()
-            .map(|d| to_string(&d.path))
+            .map(|d| format!("{}\t{}", to_string(&d.keeper), to_string(&d.path)))
             .collect::<Vec<_>>()
             .join("\n"),
         candidates_input: outcome

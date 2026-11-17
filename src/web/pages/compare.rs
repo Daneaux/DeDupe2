@@ -51,7 +51,6 @@ struct CompareResultTemplate {
     b_only_count: usize,
     dup_total: usize,
     dup_pairs_all: String,
-    dup_b_files_all: String,
     unreadable_count: usize,
     /// Unreadable files sitting in a date-named folder: still placeable, so
     /// they are folded into the originals list (dated by folder proxy).
@@ -82,7 +81,8 @@ struct DeepScanTemplate {
     destination: String,
     format: String,
     valid_count: usize,
-    confirmed_b_input: String,
+    /// `keeper<TAB>duplicate` lines for the purgatory form.
+    confirmed_pairs_input: String,
     b_root: String,
 }
 
@@ -270,10 +270,10 @@ fn render_deep_scan(
         })
         .collect();
 
-    let confirmed_b_input = outcome
-        .confirmed_b
+    let confirmed_pairs_input = outcome
+        .confirmed
         .iter()
-        .map(to_string)
+        .map(|pair| format!("{}\t{}", to_string(&pair.a), to_string(&pair.b)))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -289,7 +289,7 @@ fn render_deep_scan(
         destination: destination.to_string(),
         format: format.to_string(),
         valid_count,
-        confirmed_b_input,
+        confirmed_pairs_input,
         b_root: b_root.to_string(),
     };
     tpl.render()
@@ -377,15 +377,6 @@ fn render_compare(
     originals.dedup();
     let originals_all = originals.join("\n");
 
-    // Every B-side file in a shallow duplicate group — the purge candidates
-    // (deep scan narrows this to confirmed duplicates).
-    let dup_b_files_all = cmp
-        .duplicates
-        .iter()
-        .flat_map(|g| g.b.iter().map(to_string))
-        .collect::<Vec<_>>()
-        .join("\n");
-
     let tpl = CompareResultTemplate {
         a: a.to_string(),
         b: b.to_string(),
@@ -395,7 +386,6 @@ fn render_compare(
         b_only_count: cmp.b_only.len(),
         dup_total,
         dup_pairs_all,
-        dup_b_files_all,
         unreadable_count: cmp.unreadable.len(),
         unreadable_dated_count,
         originals_all,

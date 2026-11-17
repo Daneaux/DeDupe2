@@ -46,8 +46,8 @@
         <tbody id="similar-table-dups"></tbody>
       </table>
     </div>
-    <form method="post" action="/compare/purgatory" id="purgatory-form-dups" class="merge-form">
-      <input type="hidden" name="files" value="{{ duplicates_input }}" />
+    <form method="post" action="/compare/purgatory-duplicates" id="purgatory-form-dups" class="merge-form">
+      <input type="hidden" name="pairs" value="{{ duplicates_input }}" />
       <input type="hidden" name="b_root" value="{{ b_root }}" />
       <label class="field">
         <span>Purgatory folder</span>

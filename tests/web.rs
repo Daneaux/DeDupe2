@@ -1908,6 +1908,7 @@ async fn every_route_is_mounted() {
     let posts = [
         "/consolidate/preview", "/consolidate/run", "/compare/run", "/compare/exif",
         "/compare/deep", "/compare/copy", "/compare/transfer", "/compare/purgatory",
+        "/compare/purgatory-duplicates",
         "/sets/run", "/verify/run", "/verify/rehome", "/settings/save", "/settings/flush",
         "/settings/clear", "/similar/run", "/similar/swap", "/similar/decide",
         "/organize/scan", "/organize/run",

@@ -15,8 +15,8 @@ use tokio_stream::Stream;
 
 use crate::exif::CreationDate;
 use crate::filemover::{
-    destination_for, move_to_purgatory_with_progress, transfer_dated_with_progress,
-    transfer_files_with_progress, CopyOutcome, Operation,
+    destination_for, move_to_purgatory_with_progress, purge_proven_duplicates_with_progress,
+    transfer_dated_with_progress, transfer_files_with_progress, CopyOutcome, Operation,
 };
 use crate::web::common::{
     dated_from_form, parse_carried_dates, parse_paths, require_dir, sse_stream, to_string,
@@ -30,6 +30,10 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/compare/copy", post(compare_copy))
         .route("/compare/transfer", post(compare_transfer))
         .route("/compare/purgatory", post(compare_purgatory))
+        .route(
+            "/compare/purgatory-duplicates",
+            post(compare_purgatory_duplicates),
+        )
 }
 
 #[derive(Template)]
@@ -76,6 +80,15 @@ struct TransferResultTemplate {
 #[derive(serde::Deserialize)]
 struct PurgatoryForm {
     files: String,
+    b_root: String,
+    purgatory: String,
+}
+
+/// Duplicates to purge, each with the keeper it duplicates.
+#[derive(serde::Deserialize)]
+struct DuplicatePurgatoryForm {
+    /// One `keeper<TAB>duplicate` line per file to purge.
+    pairs: String,
     b_root: String,
     purgatory: String,
 }
@@ -328,6 +341,59 @@ async fn compare_purgatory(
     });
 
     Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
+}
+
+/// Purge duplicates, each re-proven identical to its keeper at move time.
+async fn compare_purgatory_duplicates(
+    Form(form): Form<DuplicatePurgatoryForm>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)> {
+    let pairs = parse_pairs(&form.pairs);
+    if pairs.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "no duplicate files to move".into()));
+    }
+    let purgatory = form.purgatory.trim().to_string();
+    if purgatory.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "provide a purgatory folder".into()));
+    }
+    let b_root = form.b_root.trim().to_string();
+    if b_root.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "candidate tree root is missing".into(),
+        ));
+    }
+    require_dir(Path::new(&b_root))?;
+
+    let (tx, rx) = mpsc::unbounded_channel::<Msg>();
+    let progress_tx = tx.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let progress = move |done: usize, total: usize| {
+            let _ = progress_tx.send(Msg::Progress(done, total));
+        };
+        progress(0, pairs.len());
+        let outcome = purge_proven_duplicates_with_progress(
+            &pairs,
+            Path::new(&b_root),
+            Path::new(&purgatory),
+            &progress,
+        );
+        let _ = tx.send(Msg::Done(render_purgatory(&outcome, &purgatory, &b_root)));
+    });
+
+    Ok(Sse::new(sse_stream(rx)).keep_alive(KeepAlive::default()))
+}
+
+/// `keeper<TAB>duplicate` lines; malformed lines are skipped.
+fn parse_pairs(text: &str) -> Vec<(PathBuf, PathBuf)> {
+    text.lines()
+        .filter_map(|line| {
+            let (keeper, duplicate) = line.split_once('\t')?;
+            let (keeper, duplicate) = (keeper.trim(), duplicate.trim());
+            (!keeper.is_empty() && !duplicate.is_empty())
+                .then(|| (PathBuf::from(keeper), PathBuf::from(duplicate)))
+        })
+        .collect()
 }
 
 fn render_purgatory(

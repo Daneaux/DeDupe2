@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
 
-use super::naming::{file_name, name_len, NameRegistry};
+use super::duplicates::confirmed_groups;
+use super::naming::{file_name, NameRegistry};
 use super::safe_fs::relocate_file;
 use super::{FileMoverError, Operation, Progress};
 use crate::image_reader::is_supported_image;
-use crate::Scanner::scan::hash_image_data_parallel;
 
 #[derive(Debug)]
 pub struct MergeOutcome {
@@ -127,23 +127,8 @@ fn plan_merge(
     all.retain(|f| split_event(&f.rel).is_some());
 
     let paths: Vec<PathBuf> = all.iter().map(|f| f.path.clone()).collect();
-    let hashes = hash_image_data_parallel(&paths, 64 * 1024, progress);
-
-    let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
-    for (i, fh) in hashes.into_iter().enumerate() {
-        buckets.entry(fh.hash).or_default().push(i);
-    }
-
-    let mut groups: Vec<Vec<usize>> = Vec::new();
-    for mut bucket in buckets.into_values() {
-        bucket.sort_by(|&a, &b| {
-            name_len(&all[a].path)
-                .cmp(&name_len(&all[b].path))
-                .then_with(|| all[a].path.cmp(&all[b].path))
-        });
-        groups.push(bucket);
-    }
-    groups.sort_by(|a, b| all[a[0]].path.cmp(&all[b[0]].path));
+    // Only files with proven-identical content form a duplicate group.
+    let groups = confirmed_groups(&paths, progress);
 
     let canonical = canonical_folders(&all);
 

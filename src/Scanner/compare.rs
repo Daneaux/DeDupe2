@@ -354,6 +354,9 @@ pub struct DeepScanOutcome {
     /// B-side files of confirmed pairs (deduplicated, sorted) — the ones
     /// that already exist in A and can be moved out to purgatory.
     pub confirmed_b: Vec<PathBuf>,
+    /// One proven `(A keeper, B duplicate)` pair per entry of `confirmed_b`,
+    /// in the same order, so a purge can re-prove each file at move time.
+    pub confirmed: Vec<DupPair>,
     pub removed: Vec<RemovedPair>,
 }
 
@@ -375,8 +378,8 @@ pub fn deep_scan_pairs_cached(
 /// Re-verify each duplicate pair against its full content: exact file bytes,
 /// a complete encoded-image-data hash (all scan data for stills, the whole
 /// `mdat` payload for movies), and finally fully decoded pixels for stills.
-/// Files whose content cannot be read at all stay "kept" as duplicates
-/// (they cannot be proven false positives).
+/// Only a proven match counts: a pair that cannot be fully read or decoded
+/// (or whose check panics) is reported as removed, never as a duplicate.
 pub fn deep_scan_pairs_with_progress(
     pairs: &[DupPair],
     progress: &(dyn Fn(usize, usize) + Send + Sync),
@@ -399,7 +402,7 @@ fn deep_scan_pairs_inner(
                 Some(cache) => is_true_duplicate_cached(cache, &pair.a, &pair.b),
                 None => is_true_duplicate(&pair.a, &pair.b),
             }))
-            .unwrap_or(None);
+            .unwrap_or_else(|_| Some("deep check crashed: not proven identical".to_string()));
             progress(done.fetch_add(1, Ordering::SeqCst) + 1, total);
             verdict
         })
@@ -412,14 +415,15 @@ fn deep_scan_pairs_inner(
     // fully accounted for; any other pair mentioning that B is a shallow-only
     // link — it must not surface as a false positive (which would demote a
     // true duplicate back into the originals list downstream).
-    let mut confirmed_b: Vec<PathBuf> = pairs
+    let mut confirmed: Vec<DupPair> = pairs
         .iter()
         .zip(&verdicts)
         .filter(|(_, reason)| reason.is_none())
-        .map(|(pair, _)| pair.b.clone())
+        .map(|(pair, _)| pair.clone())
         .collect();
-    confirmed_b.sort();
-    confirmed_b.dedup();
+    confirmed.sort_by(|x, y| x.b.cmp(&y.b).then_with(|| x.a.cmp(&y.a)));
+    confirmed.dedup_by(|x, y| x.b == y.b);
+    let confirmed_b: Vec<PathBuf> = confirmed.iter().map(|pair| pair.b.clone()).collect();
     let confirmed_set: HashSet<&PathBuf> = confirmed_b.iter().collect();
 
     let mut kept = 0usize;
@@ -454,6 +458,7 @@ fn deep_scan_pairs_inner(
         kept,
         covered,
         confirmed_b,
+        confirmed,
         removed,
     }
 }
@@ -467,13 +472,26 @@ fn is_true_duplicate_cached(
     a: &Path,
     b: &Path,
 ) -> Option<String> {
+    verdict(content_match_cached(cache, a, b))
+}
+
+/// [`content_match`] through the scan cache: the same layers, with every
+/// full hash and pixel key computed once per file.
+pub fn content_match_cached(
+    cache: &std::sync::Mutex<crate::Scanner::cache::ScanCache>,
+    a: &Path,
+    b: &Path,
+) -> ContentMatch {
     use crate::image_reader::is_video;
     use crate::Scanner::cache::{full_bytes_cached, full_content_cached, pixel_cached};
 
-    let (ha, hb) = (full_bytes_cached(cache, a).ok(), full_bytes_cached(cache, b).ok());
+    let (ha, hb) = (
+        full_bytes_cached(cache, a).ok(),
+        full_bytes_cached(cache, b).ok(),
+    );
     if let (Some(ha), Some(hb)) = (ha, hb) {
         if ha == hb {
-            return None;
+            return ContentMatch::Same;
         }
     }
 
@@ -484,56 +502,85 @@ fn is_true_duplicate_cached(
     match (ca, cb) {
         (Some(ha), Some(hb)) => {
             if ha == hb {
-                return None;
+                return ContentMatch::Same;
             }
             if is_video(a) || is_video(b) {
-                return Some(format!(
+                return ContentMatch::Different(format!(
                     "full video payloads differ (mdat hash {ha:016x} vs {hb:016x})"
                 ));
             }
         }
-        _ => return None,
+        _ => return ContentMatch::Unknown,
     }
 
-    let (pa, pb) = (pixel_cached(cache, a), pixel_cached(cache, b));
-    match (pa, pb) {
+    match (pixel_cached(cache, a), pixel_cached(cache, b)) {
         (Some(pa), Some(pb)) => {
             if pa == pb {
-                None
+                ContentMatch::Same
             } else {
-                Some("decoded pixels differ".to_string())
+                ContentMatch::Different("decoded pixels differ".to_string())
             }
         }
-        _ => None,
+        _ => ContentMatch::Unknown,
     }
 }
 
-fn is_true_duplicate(a: &Path, b: &Path) -> Option<String> {
+/// Reason a pair is not a proven duplicate, or `None` when it is.
+const NOT_PROVEN: &str =
+    "not proven identical: one file could not be fully read or decoded, so it is treated as unique";
+
+/// Deep-scan verdict: `None` only for a proven duplicate. Undecidable pairs
+/// are rejected like false positives — nothing may be purged on a guess.
+fn verdict(m: ContentMatch) -> Option<String> {
+    match m {
+        ContentMatch::Same => None,
+        ContentMatch::Different(reason) => Some(reason),
+        ContentMatch::Unknown => Some(NOT_PROVEN.to_string()),
+    }
+}
+
+/// Result of comparing two files' full content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContentMatch {
+    /// Proven the same: identical bytes, identical full image data, or
+    /// identical decoded pixels.
+    Same,
+    /// Proven different, with the evidence.
+    Different(String),
+    /// Could not be decided: one side could not be read or decoded.
+    Unknown,
+}
+
+/// Compare two files by full content, never by a prefix. Layers, cheapest
+/// first: exact file bytes; the complete encoded-image-data hash (all scan
+/// data for stills, the whole `mdat` payload for movies — authoritative for
+/// movies); and for stills, fully decoded pixels. Decoder panics count as
+/// undecodable.
+///
+/// Anything that would remove a file must require [`ContentMatch::Same`];
+/// [`ContentMatch::Unknown`] is never evidence of a duplicate.
+pub fn content_match(a: &Path, b: &Path) -> ContentMatch {
     use crate::image_reader::{hash_all_bytes, hash_image_data_all, is_video, read_image};
 
-    // Exact bytes: trivially duplicates.
     if let (Ok(ha), Ok(hb)) = (hash_all_bytes(a), hash_all_bytes(b)) {
         if ha == hb {
-            return None;
+            return ContentMatch::Same;
         }
     }
 
-    // Full image-content hash: all encoded scan data for stills, the complete
-    // `mdat` payload for movies. Movies have no pixel-decode stage, so for
-    // them this hash is authoritative either way.
-    match (hash_image_data_all(a), hash_image_data_all(b)) {
-        (Ok(ha), Ok(hb)) => {
+    let full = |p: &Path| catch_unwind(AssertUnwindSafe(|| hash_image_data_all(p)));
+    match (full(a), full(b)) {
+        (Ok(Ok(ha)), Ok(Ok(hb))) => {
             if ha == hb {
-                return None;
+                return ContentMatch::Same;
             }
             if is_video(a) || is_video(b) {
-                return Some(format!(
+                return ContentMatch::Different(format!(
                     "full video payloads differ (mdat hash {ha:016x} vs {hb:016x})"
                 ));
             }
         }
-        // Undecodable: cannot prove a false positive.
-        _ => return None,
+        _ => return ContentMatch::Unknown,
     }
 
     // Stills with different encoded data can still be the same image in a
@@ -544,13 +591,17 @@ fn is_true_duplicate(a: &Path, b: &Path) -> Option<String> {
     ) {
         (Ok(Ok(ia)), Ok(Ok(ib))) => {
             if images_equal(&ia, &ib) {
-                None
+                ContentMatch::Same
             } else {
-                Some("decoded pixels differ".to_string())
+                ContentMatch::Different("decoded pixels differ".to_string())
             }
         }
-        _ => None, // undecodable: cannot prove a false positive
+        _ => ContentMatch::Unknown,
     }
+}
+
+fn is_true_duplicate(a: &Path, b: &Path) -> Option<String> {
+    verdict(content_match(a, b))
 }
 
 fn images_equal(

@@ -118,8 +118,12 @@
     } else if (form.id === "purgatory-form") {
       url = "/compare/purgatory";
       phaseLabel = "Moving from " + shortPath(fieldValue(form, "b_root"));
+    } else if (form.id === "purgatory-form-confirmed") {
+      url = "/compare/purgatory-duplicates";
+      phaseLabel = "Re-checking and moving proven duplicates from " +
+        shortPath(fieldValue(form, "b_root"));
     } else if (form.id === "purgatory-form-dups") {
-      url = "/compare/purgatory";
+      url = "/compare/purgatory-duplicates";
       phaseLabel = "Moving exact copies from " + shortPath(fieldValue(form, "b_root"));
     } else if (form.id === "organize-form") {
       url = "/organize/scan";

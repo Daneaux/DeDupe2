@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use super::dates::is_event_name;
+use super::duplicates::confirmed_groups;
 use super::library::MovePlan;
-use super::naming::{name_len, NameRegistry};
+use super::naming::NameRegistry;
 use super::safe_fs::{relocate_file, remove_if_empty};
 use super::{FileMoverError, Operation, Progress};
 use crate::image_reader::collect_image_files;
-use crate::Scanner::scan::hash_image_data_parallel;
 
 #[derive(Debug)]
 pub struct ConsolidationOutcome {
@@ -135,22 +135,11 @@ fn consolidate_plan(
         }
 
         let abs: Vec<PathBuf> = files.iter().map(|(p, _)| p.clone()).collect();
-        let hashes = hash_image_data_parallel(&abs, 64 * 1024, progress);
-
-        let mut buckets: HashMap<u64, Vec<usize>> = HashMap::new();
-        for (i, fh) in hashes.into_iter().enumerate() {
-            buckets.entry(fh.hash).or_default().push(i);
-        }
-
-        let mut purged: HashSet<usize> = HashSet::new();
-        for bucket in buckets.values_mut() {
-            bucket.sort_by(|&a, &b| {
-                name_len(&files[a].0)
-                    .cmp(&name_len(&files[b].0))
-                    .then_with(|| files[a].0.cmp(&files[b].0))
-            });
-            purged.extend(bucket.iter().skip(1).copied());
-        }
+        // Purge only files whose full content matches the group's keeper.
+        let purged: HashSet<usize> = confirmed_groups(&abs, progress)
+            .into_iter()
+            .flat_map(|group| group.into_iter().skip(1))
+            .collect();
 
         let mut keep_names = NameRegistry::new();
         let mut purge_names = NameRegistry::new();

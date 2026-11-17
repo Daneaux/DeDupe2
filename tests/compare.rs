@@ -657,7 +657,7 @@ fn deep_scan_keeps_photos_identical_except_metadata() {
     let root = tempfile::tempdir().unwrap();
     let a_path = root.path().join("a.jpg");
     let b_path = root.path().join("b.jpg");
-    write(&a_path, "a.jpg", &sample("jpg-exif-mod/image1.JPG"));
+    write(root.path(), "a.jpg", &sample("jpg-exif-mod/image1.JPG"));
 
     // Same photo; flip one byte inside the EXIF (APP1) segment.
     let mut bytes = sample("jpg-exif-mod/image1.JPG");
@@ -668,7 +668,7 @@ fn deep_scan_keeps_photos_identical_except_metadata() {
     let flip = exif + 6;
     assert!(bytes[flip] != 0xFF);
     bytes[flip] ^= 0x01;
-    write(&b_path, "b.jpg", &bytes);
+    write(root.path(), "b.jpg", &bytes);
 
     let outcome = deep_scan_pairs(&[DupPair { a: a_path, b: b_path }]);
     assert_eq!(outcome.kept, 1, "metadata-only differences must stay duplicates");

@@ -47,18 +47,7 @@
         <button type="submit" class="btn btn-small btn-secondary">Deep scan</button>
       </form>
     </div>
-    <form method="post" action="/compare/purgatory" id="purgatory-form" class="merge-form">
-      <input type="hidden" name="files" value="{{ dup_b_files_all }}" />
-      <input type="hidden" name="b_root" value="{{ b }}" />
-      <label class="field">
-        <span>Purgatory folder</span>
-        <input type="text" name="purgatory" placeholder="/path/to/purgatory" />
-        <span class="hint">Moves every B-side duplicate out of the candidate tree, keeping its folder layout. Copy &rarr; byte-verify &rarr; remove; collisions renamed; empty folders pruned.</span>
-      </label>
-      <div class="modal-actions">
-        <button type="submit" class="btn btn-small btn-secondary" {% if dup_total == 0 %}disabled{% endif %}>Move duplicates to purgatory</button>
-      </div>
-    </form>
+    <p class="hint" id="deep-scan-required">These matched on their first 64&nbsp;KB only. Run <strong>Deep scan</strong> to prove each one identical by full content; only proven duplicates can be moved to purgatory.</p>
     <div class="table-tools">
       <input type="text" class="table-filter" id="compare-filter-dups" placeholder="filter this table…" />
       <span class="hint" id="compare-count-dups"></span>

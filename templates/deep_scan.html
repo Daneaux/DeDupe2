@@ -38,13 +38,13 @@
       <span class="badge badge-ok">{{ kept }}</span>
       <span class="collection-sub">B files that already exist in A</span>
     </div>
-    <form method="post" action="/compare/purgatory" id="purgatory-form" class="merge-form">
-      <input type="hidden" name="files" value="{{ confirmed_b_input }}" />
+    <form method="post" action="/compare/purgatory-duplicates" id="purgatory-form-confirmed" class="merge-form">
+      <input type="hidden" name="pairs" value="{{ confirmed_pairs_input }}" />
       <input type="hidden" name="b_root" value="{{ b_root }}" />
       <label class="field">
         <span>Purgatory folder</span>
         <input type="text" name="purgatory" placeholder="/path/to/purgatory" />
-        <span class="hint">Moves every confirmed duplicate out of the candidate tree, keeping its folder layout. Copy &rarr; byte-verify &rarr; remove; collisions renamed; empty folders pruned.</span>
+        <span class="hint">Moves every confirmed duplicate out of the candidate tree, keeping its folder layout. Each file is re-checked against its A copy just before it moves; anything no longer identical stays put. Copy &rarr; byte-verify &rarr; remove; collisions renamed; empty folders pruned.</span>
       </label>
       <div class="modal-actions">
         <button type="submit" class="btn btn-small btn-secondary" {% if kept == 0 || b_root == "" %}disabled{% endif %}>Move confirmed duplicates to purgatory</button>
