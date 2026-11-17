@@ -236,3 +236,40 @@ fn transfer_collision_renames_instead_of_overwriting() {
     assert_eq!(std::fs::read(destination.join("photo (1).jpg")).unwrap(), b"new");
 }
 
+
+/// Tree relocation and date organizing target exact paths; when a file is
+/// already there it must be reported, never replaced (a rename would
+/// silently overwrite it on Unix).
+#[test]
+fn exact_path_relocations_never_overwrite_existing_files() {
+    use dedupe2::exif::CreationDate;
+    use dedupe2::filemover::{organize_by_date, relocate_tree};
+
+    for op in [Operation::Move, Operation::Copy] {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join("a.jpg"), b"incoming").unwrap();
+        std::fs::write(dst.path().join("a.jpg"), b"precious").unwrap();
+
+        assert!(relocate_tree(src.path(), dst.path(), op).is_err(), "{op:?}");
+        assert_eq!(std::fs::read(dst.path().join("a.jpg")).unwrap(), b"precious");
+        assert_eq!(std::fs::read(src.path().join("a.jpg")).unwrap(), b"incoming");
+    }
+
+    // organize_by_date reserves fresh names, so it lands next to the
+    // existing file instead.
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let existing = dst.path().join("2020/01-02/a.jpg");
+    std::fs::create_dir_all(existing.parent().unwrap()).unwrap();
+    std::fs::write(&existing, b"precious").unwrap();
+    let incoming = src.path().join("a.jpg");
+    std::fs::write(&incoming, b"incoming").unwrap();
+
+    let files = [(incoming.clone(), CreationDate::DateCreated("2020:01:02 03:04:05".into()))];
+    organize_by_date(&files, dst.path(), "", Operation::Move).unwrap();
+
+    assert_eq!(std::fs::read(&existing).unwrap(), b"precious");
+    assert_eq!(std::fs::read(dst.path().join("2020/01-02/a (1).jpg")).unwrap(), b"incoming");
+    assert!(!incoming.exists());
+}

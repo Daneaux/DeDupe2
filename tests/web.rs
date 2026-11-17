@@ -1895,3 +1895,35 @@ async fn verify_rehome_moves_a_misfiled_photo_and_reverifies() {
     assert!(!misfiled.exists(), "misfiled source was moved");
     assert!(root_path.join("2022/08-17/photo.jpg").exists());
 }
+
+/// Every route the UI uses is still mounted after the router was split into
+/// per-page modules. Bodies are empty, so handlers may reject the request —
+/// they just must not be missing.
+#[tokio::test]
+async fn every_route_is_mounted() {
+    let gets = [
+        "/", "/consolidate", "/compare", "/sets", "/verify", "/settings", "/similar",
+        "/organize", "/reveal", "/thumb", "/cache-status",
+    ];
+    let posts = [
+        "/consolidate/preview", "/consolidate/run", "/compare/run", "/compare/exif",
+        "/compare/deep", "/compare/copy", "/compare/transfer", "/compare/purgatory",
+        "/sets/run", "/verify/run", "/verify/rehome", "/settings/save", "/settings/flush",
+        "/settings/clear", "/similar/run", "/similar/swap", "/similar/decide",
+        "/organize/scan", "/organize/run",
+    ];
+
+    for uri in gets {
+        let res = app()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::NOT_FOUND, "GET {uri} is not routed");
+        assert_ne!(res.status(), StatusCode::METHOD_NOT_ALLOWED, "GET {uri}");
+    }
+    for uri in posts {
+        let res = app().oneshot(form_request(uri, String::new())).await.unwrap();
+        assert_ne!(res.status(), StatusCode::NOT_FOUND, "POST {uri} is not routed");
+        assert_ne!(res.status(), StatusCode::METHOD_NOT_ALLOWED, "POST {uri}");
+    }
+}
