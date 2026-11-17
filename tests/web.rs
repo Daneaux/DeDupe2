@@ -1928,3 +1928,54 @@ async fn every_route_is_mounted() {
         assert_ne!(res.status(), StatusCode::METHOD_NOT_ALLOWED, "POST {uri}");
     }
 }
+
+/// Other web pages open in the browser must not be able to drive the
+/// server (cross-site form POSTs, DNS rebinding); the app's own pages can.
+#[tokio::test]
+async fn requests_from_other_sites_are_forbidden() {
+    let purge = |headers: &[(&str, &str)]| {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/compare/purgatory")
+            .header("content-type", "application/x-www-form-urlencoded");
+        for (name, value) in headers {
+            req = req.header(*name, *value);
+        }
+        req.body(Body::from("files=&b_root=&purgatory=")).unwrap()
+    };
+
+    for headers in [
+        &[("host", "127.0.0.1:3000"), ("origin", "http://evil.example")][..],
+        &[("host", "127.0.0.1:3000"), ("sec-fetch-site", "cross-site")][..],
+        &[("host", "evil.example:3000")][..],
+    ] {
+        let res = app().oneshot(purge(headers)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{headers:?}");
+    }
+
+    // The app's own same-origin request reaches the handler (which then
+    // rejects the empty form on its merits).
+    let res = app()
+        .oneshot(purge(&[
+            ("host", "127.0.0.1:3000"),
+            ("origin", "http://127.0.0.1:3000"),
+            ("sec-fetch-site", "same-origin"),
+        ]))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+    // Cross-site GETs (an <img> pointing at /thumb) are refused too.
+    let res = app()
+        .oneshot(
+            Request::builder()
+                .uri("/thumb?path=/etc/hosts")
+                .header("host", "127.0.0.1:3000")
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
